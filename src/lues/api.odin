@@ -34,9 +34,14 @@ api_init :: proc(k: ^Kernel) {
         io_watch         = api_io_watch,
         io_fd            = api_io_fd,
         io_close         = api_io_close,
+        fail             = api_fail,
+        // (hole plugin-calls :tags (compose abi) :sev missing-system :needs (nested-dispatch-blame)) no call arm: a plugin cannot run another plugin's command.
+        // (hole plugin-hooks :tags (compose abi) :sev missing-system :needs (nested-dispatch-blame)) no hook arms: a plugin cannot declare a hook point for others to join.
+        // (hole doc-vars :tags (compose abi) :sev missing-system) no per-document variables: plugins cannot share named state.
     }
 }
 
+// (hole rs-extern-panic :tags (port abi) :sev missing-port :needs (rs-plugin-abi)) Rust api arms would need every extern "C" fn to stop its own panics before they reach plugin frames.
 // Refuses a Self from an earlier load. Opens fault guard 2 until api_done.
 api_kernel :: proc "c" (api: ^Api, self: Self) -> (k: ^Kernel, i: int, ok: bool) {
     if api == nil {
@@ -270,6 +275,20 @@ take_spans :: proc(k: ^Kernel, i: int, pub: ^Span_Pub) -> (out: docs.Spans, ok: 
 @(private = "file")
 off :: proc(v: uint) -> int {
     return int(min(v, uint(max(int))))
+}
+
+// Not through api_kernel: the self is read only to name the plugin when there is no net.
+@(private = "file")
+api_fail :: proc "c" (api: ^Api, self: Self, msg: [^]u8, msg_len: uint) -> ! {
+    name: string
+    if api != nil {
+        k := box_kernel(api)^
+        idx, gen := unpack(u64(self))
+        if int(idx) < len(k.plugs) && k.plugs[idx].gen == gen {
+            name = k.plugs[idx].name
+        }
+    }
+    fault_fail(name, string(msg[:msg_len]) if msg != nil else "")
 }
 
 @(private = "file")

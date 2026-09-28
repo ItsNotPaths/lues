@@ -11,6 +11,7 @@ Ret :: struct {
 
 App_Fn :: #type proc(api: ^Api, self: Self, data: rawptr) -> i32
 
+// (hole rs-dispatch-trampoline :tags (port fault) :sev missing-port :needs (nested-dispatch-blame)) Rust cannot hold a sigsetjmp frame; dispatch needs a C or asm trampoline for the jump back.
 // Data, so the sigsetjmp sits in the frame that makes the call.
 Call :: struct {
     what:  enum {
@@ -40,6 +41,7 @@ dispatch :: proc(k: ^Kernel, i: int, c: Call) -> (r: Ret, ok: bool) {
     if c.what != .App {
         k.ran += 1
     }
+    // (hole nested-dispatch-blame :tags (fault compose) :sev wrong-behavior) one guard per thread: a fault in a nested call blames and unloads the outer plugin.
     if !fault_ready() || fault_armed() {
         r = run(k, i, c)
         return r, intact(k, i)

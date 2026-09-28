@@ -22,6 +22,7 @@ cmd_run :: proc(k: ^Kernel, slot: int, focused: Maybe(docs.Id), args: string) ->
         at = at_make(k, c.owner, id)
     }
     defer at_free(k, at)
+    // (hole advice :tags (compose abi) :sev missing-system :needs (plugin-calls)) the command's own fn always runs; another plugin cannot wrap it.
     r, ok := dispatch(k, c.owner, {what = .Command, fn = c.fn, at = &at, data = transmute([]u8)args})
     if !ok {
         return false

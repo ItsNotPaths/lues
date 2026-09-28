@@ -123,31 +123,69 @@ corrupt_test :: proc(t: ^testing.T) {
 }
 
 // Guard 2: a fault inside an api call is not unwound. The process dies and the plugin is
-// quarantined. Run in a child: this test binary again, with only the child test selected.
+// quarantined.
 @(test)
 fault_api_test :: proc(t: ^testing.T) {
+    crash(t, "fault-api", "badsubmit", .SIGSEGV)
+}
+
+// fail unwinds like a fault: unloaded and named with its message, not quarantined.
+@(test)
+fail_test :: proc(t: ^testing.T) {
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Api_Box
+    defer lues.kernel_destroy(&k)
+    i, ok := plug_host(t, &k, &box, &said, "fail")
+    if !ok {
+        return
+    }
+
+    testing.expect(t, !run(&k, "fail", args = "out of range"))
+    testing.expect_value(t, lues.loader_find(&k, "cplug"), -1)
+    testing.expect_value(t, k.plugs[i].state, lues.Plug_State.Faulted)
+    testing.expect(t, strings.contains(strings.to_string(said), "cplug failed: out of range"), strings.to_string(said))
+    testing.expect(t, !lues.quarantined(&k, "cplug"))
+
+    testing.expect(t, lues.loader_load(&k, lues.loader_path(&k, "cplug")), strings.to_string(said))
+    testing.expect(t, run(&k, "hello"))
+}
+
+// fail with no net on its thread cannot unwind: the process dies and the plugin is quarantined.
+@(test)
+fail_thread_test :: proc(t: ^testing.T) {
+    crash(t, "fail-thread", "failoff", .SIGABRT)
+}
+
+// Runs `cmd` in a child, this test binary again with only crash_child selected, and expects it
+// to die of `sig` with cplug quarantined.
+@(private = "file")
+crash :: proc(t: ^testing.T, name, cmd: string, sig: posix.Signal) {
     sync.guard(&state_lock)
-    data, staged := stage(t, "fault-api", "cplug")
+    data, staged := stage(t, name, "cplug")
     if !staged {
         return
     }
     state, _, errs, err := os.process_exec({
-        command = {os.args[0], "-tests:fault_api_child"},
-        env     = {fmt.tprintf("%s=%s", CRASH_ENV, data)},
+        command = {"/proc/self/exe", "-tests:crash_child"}, // args[0] may not be a path
+        env     = {fmt.tprintf("%s=%s", CRASH_ENV, data), fmt.tprintf("%s=%s", CRASH_CMD_ENV, cmd)},
     }, context.temp_allocator)
-    testing.expectf(t, err == nil && !state.success && state.exit_code == int(posix.Signal.SIGSEGV),
-                    "the child did not die of SIGSEGV: %v %v %s", err, state, errs)
+    testing.expectf(t, err == nil && !state.success && state.exit_code == int(sig),
+                    "the child did not die of %v: %v %v %s", sig, err, state, errs)
     file, _ := filepath.join({data, lues.QUARANTINE_FILE}, context.temp_allocator)
     raw, _ := os.read_entire_file(file, context.temp_allocator)
     testing.expect_value(t, string(raw), "cplug\n")
 }
 
 @(private = "file")
-CRASH_ENV :: "LUES_FAULT_API_CHILD"
+CRASH_ENV :: "LUES_CRASH_CHILD"
 
-// A no-op unless fault_api_test runs it.
+@(private = "file")
+CRASH_CMD_ENV :: "LUES_CRASH_CMD"
+
+// A no-op unless crash runs it.
 @(test)
-fault_api_child :: proc(t: ^testing.T) {
+crash_child :: proc(t: ^testing.T) {
     data := os.get_env(CRASH_ENV, context.temp_allocator)
     if data == "" {
         return
@@ -159,6 +197,6 @@ fault_api_child :: proc(t: ^testing.T) {
     k.hooks.say, k.user = heard, &said
     testing.expect(t, lues.loader_load(&k, lues.loader_path(&k, "cplug")))
     id := docs.store_open(&k.store)
-    run(&k, "badsubmit", id)
-    testing.fail_now(t, "the process survived a fault inside an api call")
+    run(&k, os.get_env(CRASH_CMD_ENV, context.temp_allocator), id)
+    testing.fail_now(t, "the process survived")
 }

@@ -2,6 +2,7 @@ package docs
 
 import "core:slice"
 
+// (hole rs-docs :tags (port) :sev missing-port :needs (rs-pt)) not yet a crate; documents, spans and the store are Odin only.
 // Writes queue and store_drain applies them, so gen moves at one place.
 
 Id :: struct {

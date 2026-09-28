@@ -1,6 +1,7 @@
 /* The C test plugin, against lues.h only. Each test adds the arms it needs. */
 #define _POSIX_C_SOURCE 200809L
 
+#include <pthread.h>
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
@@ -24,6 +25,37 @@ static int32_t badsubmit(const lues_api *api, lues_self self, const lues_at *at,
                          const char *args, size_t args_len) {
     (void)args, (void)args_len;
     api->submit(api, self, at->doc, 0, (const lues_edit *)8, 1, NULL, 0);
+    return 0;
+}
+
+/* `fail <msg>`: never returns. */
+static int32_t fail(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                    size_t args_len) {
+    (void)at;
+    api->fail(api, self, args, args_len);
+    return 0; /* gcc drops noreturn on a pointer */
+}
+
+/* fail from a thread of the plugin's own: no net there, so the process dies. */
+static const lues_api *FAIL_API;
+static lues_self       FAIL_SELF;
+
+static void *fail_thread(void *arg) {
+    (void)arg;
+    FAIL_API->fail(FAIL_API, FAIL_SELF, LIT("off the dispatch thread"));
+    return NULL;
+}
+
+static int32_t failoff(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                       size_t args_len) {
+    pthread_t t;
+    (void)at, (void)args, (void)args_len;
+    FAIL_SELF = self;
+    FAIL_API = api;
+    if (pthread_create(&t, NULL, fail_thread, NULL) != 0) {
+        return 1;
+    }
+    pthread_join(t, NULL);
     return 0;
 }
 
@@ -299,6 +331,8 @@ LUES_MAIN {
     api->register_command(api, self, LIT("size"), LIT("say the focused doc's size"), size);
     api->register_command(api, self, LIT("boom"), LIT("dereference null"), boom);
     api->register_command(api, self, LIT("hang"), LIT("stop returning"), hang);
+    api->register_command(api, self, LIT("fail"), LIT("fail with the args"), fail);
+    api->register_command(api, self, LIT("failoff"), LIT("fail from another thread"), failoff);
     api->register_command(api, self, LIT("badsubmit"), LIT("fault the kernel in submit"), badsubmit);
     api->register_command(api, self, LIT("append"), LIT("append the args"), append);
     api->register_command(api, self, LIT("derive"), LIT("append with nothing to undo"), derive);

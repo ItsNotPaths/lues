@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define LUES_API 1
+#define LUES_API 2
 
 #define LUES_EXPORT __attribute__((visibility("default")))
 
@@ -174,6 +174,13 @@ typedef struct lues_api {
     /* Readable = LUES_EVENT_IO with no text; read the fd yourself. Never closed by the kernel. */
     lues_io (*io_fd)(const struct lues_api *api, lues_self self, lues_doc doc, int32_t fd);
     void (*io_close)(const struct lues_api *api, lues_self self, lues_io io);
+
+    /* LUES_API 2. Unloads you the way a fault does: the call in progress is abandoned and
+     * dispatch gets it back. Call it from the plugin's own thread. With no net to catch it
+     * (none installed, another thread, or inside a call from the kernel), the process dies
+     * and you are quarantined. */
+    void (*fail)(const struct lues_api *api, lues_self self, const char *msg, size_t msg_len)
+        __attribute__((noreturn));
 } lues_api;
 
 _Static_assert(sizeof(lues_block) == 16, "lues_block");
@@ -186,7 +193,7 @@ _Static_assert(sizeof(lues_span) == 32, "lues_span");
 _Static_assert(sizeof(lues_span_pub) == 40, "lues_span_pub");
 _Static_assert(sizeof(lues_kind_vt) == 24, "lues_kind_vt");
 _Static_assert(sizeof(lues_kind_spec) == 64, "lues_kind_spec");
-_Static_assert(sizeof(lues_api) == 136, "lues_api");
+_Static_assert(sizeof(lues_api) == 144, "lues_api");
 
 /* Non-zero refuses the load and reverts what you registered. */
 #define LUES_MAIN LUES_EXPORT int32_t lues_main(const lues_api *api, lues_self self)

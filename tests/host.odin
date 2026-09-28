@@ -9,6 +9,7 @@ import "../src/docs"
 import lues "../src/lues"
 import "../src/pt"
 
+// (hole rs-test-parity :tags (port) :sev missing-port :needs (rs-host-abi)) the suite drives the Odin kernel only; nothing proves the crate behaves the same.
 Api_Box :: lues.Box(lues.Api)
 
 // No app: no hooks, no side data, no api tail.

@@ -25,6 +25,7 @@ foreign libc_ {
     // The _fd variant: backtrace_symbols mallocs.
     backtrace :: proc(buf: [^]rawptr, size: c.int) -> c.int ---
     backtrace_symbols_fd :: proc(buf: [^]rawptr, size: c.int, fd: posix.FD) ---
+    abort :: proc() -> ! ---
 }
 
 // glibc's is 200 bytes.
@@ -50,10 +51,11 @@ Guard :: struct {
     app:    ^Kernel,
     who:    int,
     base:   uintptr,
-    why:    string, // always a literal
+    why:    string, // a literal, or fail's copy in `said`
     // The plugin's name plus a newline, copied at arm time: the handler cannot allocate.
     name:   [NAME_MAX]u8,
     n:      int,
+    said:   [SAID_MAX]u8,
     traced: bool,
     armed:  bool, // atomic
     busy:   bool, // atomic; inside an api call
@@ -62,6 +64,10 @@ Guard :: struct {
 // A longer name is truncated and quarantines nobody.
 @(private = "file")
 NAME_MAX :: 64
+
+// fail's message past this is cut.
+@(private = "file")
+SAID_MAX :: 256
 
 @(private = "file", thread_local)
 g_guard: Guard
@@ -75,6 +81,7 @@ g_installed: bool
 
 // --- install ---
 
+// (hole rs-fault-handlers :tags (port fault) :sev missing-port :needs (rs-dispatch-trampoline pkey-tagging adopt-objects)) not ported; a Rust host must also install after std and take over its stack-overflow SIGSEGV handler.
 // Handlers are per process, the alt stack per thread, so a second caller only adds its stack.
 fault_install :: proc() -> bool {
     // Keep an existing alt stack: ASan unmaps its own at thread exit.
@@ -148,8 +155,38 @@ fault_disarm :: proc() {
 }
 
 // Guard 2: a fault while busy is not unwound.
+// (hole pkey-tagging :tags (memory fault) :sev missing-system :needs (kernel-arenas)) kernel memory stays writable during plugin code; a stray plugin write corrupts it without a fault.
 fault_busy :: proc "contextless" (on: bool) {
     intrinsics.atomic_store(&g_guard.busy, on)
+}
+
+// The api's fail: the same jump as a fault, taken on purpose, so no guard 1. It can't jump
+// with no net armed on this thread, or from inside an api call (a nested dispatch): it dies
+// and `name` is quarantined. The message is the plugin's memory, so it is copied while busy.
+fault_fail :: proc "contextless" (name, msg: string) -> ! {
+    g := &g_guard
+    armed := intrinsics.atomic_load(&g.armed)
+    if !armed || intrinsics.atomic_load(&g.busy) {
+        if !armed {
+            g.n = min(len(name), NAME_MAX - 1)
+            copy(g.name[:g.n], name[:g.n])
+            g.name[g.n] = '\n'
+            g.n += 1
+        }
+        g.traced = trace_write(0, "failed")
+        die(.SIGABRT, blame = g.n > 1)
+        abort()
+    }
+    intrinsics.atomic_store(&g.busy, true)
+    n := copy(g.said[:], "failed")
+    if len(msg) > 0 {
+        n += copy(g.said[n:], ": ")
+        n += copy(g.said[n:], msg)
+    }
+    intrinsics.atomic_store(&g.busy, false)
+    why := string(g.said[:n])
+    g.traced = trace_write(0, why)
+    unwind(why)
 }
 
 // Reads only the guard: the jump does not restore the arming frame's locals.
@@ -196,7 +233,7 @@ hang_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr)
 }
 
 @(private = "file")
-unwind :: proc "contextless" (why: string) {
+unwind :: proc "contextless" (why: string) -> ! {
     g_guard.why = why
     intrinsics.atomic_store(&g_guard.armed, false)
     watch_clear()
@@ -214,6 +251,7 @@ in_plugin :: proc "contextless" (pc: uintptr) -> bool {
     if pc == 0 || g.base == 0 || dladdr(rawptr(pc), &info) == 0 {
         return false
     }
+    // (hole adopt-objects :tags (fault abi) :sev missing-system) only the plugin's own .so counts; a fault in an object it dlopened (a tree-sitter grammar) kills the process.
     return uintptr(info.dli_fbase) == g.base
 }
 

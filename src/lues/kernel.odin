@@ -12,6 +12,7 @@ Home :: struct {
     state:  string, // quarantine, faults
 }
 
+// (hole rs-host-abi :tags (port host) :sev missing-port :needs (rs-kernel)) Hooks, Spec and the Box api tail are Odin types; oket needs them as a C ABI to link the crate.
 // All nil-safe.
 Hooks :: struct {
     say:        proc(k: ^Kernel, text: string),
@@ -44,6 +45,7 @@ Spec :: struct {
     user:  rawptr,
 }
 
+// (hole rs-kernel :tags (port) :sev missing-port :needs (rs-docs rs-work rs-conf rs-loader rs-extern-panic rs-arenas)) the kernel proper (insts, commands, requests, tokens, io, views) is not a crate.
 Kernel :: struct {
     using spec:  Spec,
     ctx:         runtime.Context, // api arms run in it
@@ -69,6 +71,8 @@ Kernel :: struct {
 // k must not move after this. The hang watchdog is the caller's to start.
 kernel_init :: proc(k: ^Kernel, spec: Spec) -> bool {
     k.spec = spec
+    // (hole rs-arenas :tags (port memory) :sev missing-port :needs (kernel-arenas pkey-tagging plugin-arenas)) arenas ride Odin's context allocator; Rust has no stable per-collection allocator to carry them.
+    // (hole kernel-arenas :tags (memory) :sev missing-system) the kernel allocates from libc malloc, the heap plugins share, so a plugin overrun can crash kernel code.
     k.ctx = context
     tokens_seed(k)
     api_init(k)

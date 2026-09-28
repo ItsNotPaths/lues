@@ -93,6 +93,7 @@ mod sys {
         pub io_watch: Unused,
         pub io_fd: Unused,
         pub io_close: Unused,
+        pub fail: Unused,
     }
 
     // The sizes lues.h asserts.
@@ -101,7 +102,7 @@ mod sys {
     const _: () = assert!(size_of::<Snapshot>() == 104);
     const _: () = assert!(size_of::<At>() == 40);
     const _: () = assert!(size_of::<Edit>() == 48);
-    const _: () = assert!(size_of::<Api>() == 136);
+    const _: () = assert!(size_of::<Api>() == 144);
 }
 
 /// The kernel's vtable and this load's handle. Copy: both are plain values the kernel owns.
@@ -179,6 +180,7 @@ fn text(s: &sys::Snapshot) -> Vec<u8> {
 }
 
 /// A panic must not unwind into the kernel's frames: it becomes exit code 2.
+// (hole sdk-shims :tags (sdk) :sev missing-system) a caught panic is only exit code 2 and the plugin stays loaded; no SDK routes a panic to fail.
 fn guarded(f: impl FnOnce() -> i32) -> i32 {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or(2)
 }

@@ -52,12 +52,14 @@ ledger_add :: proc(k: ^Kernel, i: int, tag: u32, idx: int) {
     append(&k.plugs[i].ledger, Record{what = .App, idx = idx, tag = tag})
 }
 
+// (hole rs-loader :tags (port loader) :sev missing-port :needs (rs-plugin-abi rs-fault-handlers reload-fresh-map)) the loader, ledger and quarantine are Odin only.
 loader_load :: proc(k: ^Kernel, path: string) -> bool {
     name := strings.trim_suffix(filepath.base(path), ".so")
     if loader_find(k, name) >= 0 {
         say(k, fmt.tprintf("%s is already loaded", name))
         return false
     }
+    // (hole reload-fresh-map :tags (loader fault) :sev wrong-behavior) a faulted plugin stays mapped, so reloading it gets the same image back with its old globals instead of a clean copy.
     lib, loaded := dynlib.load_library(path)
     if !loaded {
         say(k, fmt.tprintf("%s: %s", path, dynlib.last_error()))
@@ -231,6 +233,7 @@ unload :: proc(k: ^Kernel, i: int) {
         }
     }
     clear(&p.ledger)
+    // (hole plugin-arenas :tags (memory abi) :sev missing-system :needs (kernel-arenas)) no arena per plugin; what a faulted plugin allocated leaks.
     if p.state == .Live {
         dynlib.unload_library(p.lib)
         p.state = .Unloaded
