@@ -15,6 +15,7 @@ Box :: struct($A: typeid) where align_of(A) <= align_of(^Kernel) {
 
 // The app fills its own tail after this.
 api_init :: proc(k: ^Kernel) {
+    context = k.ctx
     box_kernel(k.api)^ = k
     k.api^ = {
         version          = API,
@@ -87,6 +88,7 @@ api_register_kind :: proc "c" (api: ^Api, self: Self, spec: ^Kind_Spec) -> Kind 
     ctx: u32
     if k.hooks.kind_ctx != nil {
         known: bool
+        context = k.host
         ctx, known = k.hooks.kind_ctx(k, string(spec.ctx[:spec.ctx_len]))
         if !known {
             say(k, fmt.tprintf("%s: %s is not a context", k.plugs[i].name, string(spec.ctx[:spec.ctx_len])))

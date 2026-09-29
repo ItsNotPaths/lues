@@ -14,7 +14,7 @@ import "core:thread"
 import "core:time"
 import "../wake"
 
-// (hole rs-work :tags (port) :sev missing-port :needs (kernel-arenas)) not yet a crate; the io worker and wake hook are Odin only.
+// (hole rs-work :tags (port) :sev missing-port :needs (rs-arenas)) not yet a crate; the io worker and wake hook are Odin only.
 // One worker thread polls children's pipes, one inotify fd and caller fds; results cross at
 // pool_drain.
 // Only the worker closes an fd: one closed under its poll could be reused by a spawn.
@@ -84,12 +84,11 @@ Pool :: struct {
     started:  bool,
 }
 
-pool_start :: proc(p: ^Pool) -> bool {
+pool_start :: proc(p: ^Pool, alloc := context.allocator) -> bool {
     if p.started {
         return true
     }
-    // (hole kernel-arenas) the io buffers come from libc malloc too.
-    p.alloc = runtime.default_allocator()
+    p.alloc = alloc
     // A write to an exited child must be EPIPE, not a death.
     sync.once_do(&sigpipe_once, proc() {
         act: posix.sigaction_t

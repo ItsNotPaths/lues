@@ -42,6 +42,7 @@ Call :: struct {
 // fault unloads a plugin that is also further down the stack, its outer calls come back
 // `ok = false`, so nothing it returns is kept.
 dispatch :: proc(k: ^Kernel, i: int, c: Call) -> (r: Ret, ok: bool) {
+    context = k.ctx
     if c.what != .App {
         k.ran += 1
     }
@@ -66,11 +67,20 @@ dispatch :: proc(k: ^Kernel, i: int, c: Call) -> (r: Ret, ok: bool) {
 
 @(private = "file")
 intact :: proc(k: ^Kernel, i: int) -> bool {
-    if docs.store_check(&k.store) && (k.hooks.check == nil || k.hooks.check(k)) {
+    if docs.store_check(&k.store) && app_intact(k) {
         return true
     }
     loader_faulted(k, i, "left a document corrupt")
     return false
+}
+
+@(private = "file")
+app_intact :: proc(k: ^Kernel) -> bool {
+    if k.hooks.check == nil {
+        return true
+    }
+    context = k.host
+    return k.hooks.check(k)
 }
 
 @(private = "file")

@@ -1,6 +1,7 @@
 package docs
 
 import "core:slice"
+import "../pt"
 
 // Runs are flat, sorted and non-overlapping within a bucket, and move with the bytes.
 
@@ -101,6 +102,7 @@ spans_follow :: proc(slot: ^Slot) {
 // Later in `order` wins per channel. A producer `order` does not name is not read.
 spans_read :: proc(s: ^Store, id: Id, lo, hi: int, order: []Producer,
                    alloc := context.temp_allocator) -> []Span_Run {
+    context.allocator = pt.kept(&s.alloc)
     slot, ok := store_resolve(s, id)
     if !ok || hi <= lo {
         return nil
@@ -118,6 +120,7 @@ spans_read :: proc(s: ^Store, id: Id, lo, hi: int, order: []Producer,
 }
 
 spans_forget :: proc(s: ^Store, who: Producer) {
+    context.allocator = pt.kept(&s.alloc)
     for &slot in s.slots {
         for &b in slot.spans {
             if b.who == who {

@@ -198,7 +198,7 @@ fault_disarm :: proc() {
 }
 
 // Guard 2: a fault while busy is not unwound.
-// (hole pkey-tagging :tags (memory fault) :sev missing-system :needs (kernel-arenas)) kernel memory stays writable during plugin code; a stray plugin write corrupts it without a fault.
+// (hole pkey-tagging :tags (memory fault) :sev missing-system) kernel memory stays writable during plugin code; a stray plugin write corrupts it without a fault.
 fault_busy :: proc "contextless" (on: bool) {
     if f := top(); f != nil {
         intrinsics.atomic_store(&f.busy, on)
@@ -411,6 +411,7 @@ g_trace: i32 // the faults file; 0 for none
 
 // Append-only: repeated crashes keep their history.
 fault_trace_open :: proc(a: ^Kernel) {
+    context = a.ctx
     path := fault_trace_path(a)
     if path == "" || a.traces != nil {
         return
@@ -424,6 +425,7 @@ fault_trace_open :: proc(a: ^Kernel) {
 }
 
 fault_trace_close :: proc(a: ^Kernel) {
+    context = a.ctx
     if a.traces == nil {
         return
     }
@@ -434,6 +436,7 @@ fault_trace_close :: proc(a: ^Kernel) {
 
 // Temp-allocated; empty with no state dir.
 fault_trace_path :: proc(a: ^Kernel) -> string {
+    context = a.ctx
     if a.home.state == "" {
         return ""
     }

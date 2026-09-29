@@ -53,11 +53,13 @@ Record :: struct {
 
 // For app api arms. Unload hands the record to hooks.unregister.
 ledger_add :: proc(k: ^Kernel, i: int, tag: u32, idx: int) {
+    context = k.ctx
     append(&k.plugs[i].ledger, Record{what = .App, idx = idx, tag = tag})
 }
 
 // (hole rs-loader :tags (port loader) :sev missing-port :needs (rs-plugin-abi rs-fault-handlers)) the loader, ledger and quarantine are Odin only.
 loader_load :: proc(k: ^Kernel, path: string) -> bool {
+    context = k.ctx
     name := strings.trim_suffix(filepath.base(path), ".so")
     if loader_find(k, name) >= 0 {
         say(k, fmt.tprintf("%s is already loaded", name))
@@ -99,6 +101,7 @@ loader_load :: proc(k: ^Kernel, path: string) -> bool {
 }
 
 loader_unload :: proc(k: ^Kernel, i: int) -> bool {
+    context = k.ctx
     if i < 0 || i >= len(k.plugs) || k.plugs[i].state != .Live {
         return false
     }
@@ -107,6 +110,7 @@ loader_unload :: proc(k: ^Kernel, i: int) -> bool {
 }
 
 loader_faulted :: proc(k: ^Kernel, i: int, why: string, traced := false) {
+    context = k.ctx
     if i < 0 || i >= len(k.plugs) || k.plugs[i].state != .Live {
         return // a nested dispatch may blame the same plugin twice
     }
@@ -118,6 +122,7 @@ loader_faulted :: proc(k: ^Kernel, i: int, why: string, traced := false) {
 
 // In name order. Quarantined plugins are held back; loader_load lifts a quarantine.
 loader_autoload :: proc(k: ^Kernel) {
+    context = k.ctx
     dir, _ := filepath.join({k.home.data, PLUGIN_DIR}, context.temp_allocator)
     f, err := os.open(dir)
     if err != nil {
@@ -149,6 +154,7 @@ loader_autoload :: proc(k: ^Kernel) {
 }
 
 loader_reload :: proc(k: ^Kernel, name: string) -> bool {
+    context = k.ctx
     i := loader_find(k, name)
     if i < 0 {
         say(k, fmt.tprintf("%s is not loaded", name))
@@ -170,6 +176,7 @@ loader_find :: proc(k: ^Kernel, name: string) -> int {
 
 // Reused per name; the bumped gen makes an old Self refuse.
 loader_slot :: proc(k: ^Kernel, name, path: string) -> int {
+    context = k.ctx
     for &p, i in k.plugs {
         if p.state != .Live && p.name == name {
             delete(p.path)
@@ -183,6 +190,7 @@ loader_slot :: proc(k: ^Kernel, name, path: string) -> int {
 
 // Temp-allocated.
 loader_path :: proc(k: ^Kernel, name: string) -> string {
+    context = k.ctx
     file := fmt.tprintf("%s.so", name)
     path, _ := filepath.join({k.home.data, PLUGIN_DIR, name, file}, context.temp_allocator)
     return path
@@ -301,12 +309,13 @@ unload :: proc(k: ^Kernel, i: int) {
             clear(&p.seen)
         case .App:
             if k.hooks.unregister != nil {
+                context = k.host
                 k.hooks.unregister(k, r)
             }
         }
     }
     clear(&p.ledger)
-    // (hole plugin-arenas :tags (memory abi) :sev missing-system :needs (kernel-arenas)) no arena per plugin; what a faulted plugin allocated leaks.
+    // (hole plugin-arenas :tags (memory abi) :sev missing-system) no arena per plugin; what a faulted plugin allocated leaks.
     if p.state == .Live {
         dynlib.unload_library(p.lib)
         p.state = .Unloaded

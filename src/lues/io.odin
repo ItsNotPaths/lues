@@ -13,6 +13,7 @@ Io_Job :: struct {
 
 // Once a frame. An fd job is rearmed after its handler ran, which is where the plugin reads it.
 io_pump :: proc(k: ^Kernel) {
+    context = k.ctx
     if k.io == nil {
         return
     }
@@ -32,6 +33,7 @@ io_pump :: proc(k: ^Kernel) {
 
 // A plugin's jobs die with it.
 io_forget :: proc(k: ^Kernel, owner: int) {
+    context = k.ctx
     if k.io == nil {
         return
     }
@@ -48,6 +50,7 @@ io_forget :: proc(k: ^Kernel, owner: int) {
 }
 
 io_destroy :: proc(k: ^Kernel) {
+    context = k.ctx
     if k.io != nil {
         work.pool_stop(k.io)
         free(k.io)

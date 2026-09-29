@@ -13,6 +13,7 @@ Snapshot :: struct {
 
 // The caller owns one reference.
 snapshot_take :: proc(pt: ^Piece_Table, gen: u64) -> ^Snapshot {
+    context.allocator = kept(&pt.alloc)
     s := new(Snapshot)
     s.rc = 1
     s.gen = gen
@@ -35,6 +36,7 @@ snapshot_release :: proc(s: ^Snapshot) {
     if !rc.release(&s.rc) {
         return
     }
+    context.allocator = s.arena.alloc // the table's; read before the arena may go
     arena_release(s.arena)
     delete(s.pieces)
     delete(s.segs)

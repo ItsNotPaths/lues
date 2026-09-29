@@ -1,9 +1,10 @@
 package pt
 
+import "base:runtime"
 import "core:slice"
 import "../rc"
 
-// (hole rs-pt :tags (port) :sev missing-port :needs (kernel-arenas)) not yet a crate; the piece table and its arena are Odin only.
+// (hole rs-pt :tags (port) :sev missing-port :needs (rs-arenas)) not yet a crate; the piece table and its arena are Odin only.
 // Pieces over immutable blocks. Nothing written is copied or moved.
 // Invariants: pieces in order, none empty, doc_off the running total; line 0 starts at 0 and
 // the index is never empty; size is the sum of piece lengths.
@@ -12,6 +13,7 @@ import "../rc"
 // slice stays valid. Atomic refcount: the last release may come from a worker thread.
 Arena :: struct {
     rc:     int,
+    alloc:  runtime.Allocator, // it and everything it owns
     owned:  [dynamic][]u8, // every text block, for freeing; writer-only, so it may move freely
     spines: [dynamic][][]u8, // block-list buffers, live one last
     starts: [dynamic][]int, // line-start buffers, live one last
@@ -37,6 +39,7 @@ Piece_Table :: struct {
     spare:      [dynamic]Piece,
     // Pieces the last splice visited, for a test.
     touched:    int,
+    alloc:      runtime.Allocator, // everything it holds, whoever calls; set by pt_init
 }
 
 // [lo, hi) becomes `text`. A batch is sorted by `lo` and disjoint.
@@ -87,6 +90,7 @@ PT_ARENA_FLOOR :: 4096
 arena_new :: proc() -> ^Arena {
     a := new(Arena)
     a.rc = 1
+    a.alloc = context.allocator
     return a
 }
 
@@ -98,6 +102,7 @@ arena_release :: proc(a: ^Arena) {
     if !rc.release(&a.rc) {
         return
     }
+    context.allocator = a.alloc
     for b in a.owned {
         delete(b)
     }
@@ -141,15 +146,26 @@ push_starts :: proc(pt: ^Piece_Table, vals: ..int) {
     pt.starts = buf[:len(pt.starts) + len(vals)]
 }
 
+// The allocator a table or store was made with, so what it holds goes back to it whoever
+// calls. A zero one takes the caller's.
+kept :: proc(a: ^runtime.Allocator) -> runtime.Allocator {
+    if a.procedure == nil {
+        a^ = context.allocator
+    }
+    return a^
+}
+
 // --- lifecycle ---
 
 pt_init :: proc(pt: ^Piece_Table) {
+    pt.alloc = context.allocator
     pt.arena = arena_new()
     pt.tail = -1
     lines_set(pt, {0})
 }
 
 pt_destroy :: proc(pt: ^Piece_Table) {
+    context.allocator = kept(&pt.alloc)
     arena_release(pt.arena)
     delete(pt.pieces)
     delete(pt.spare)
@@ -159,6 +175,7 @@ pt_destroy :: proc(pt: ^Piece_Table) {
 
 // A fresh arena, so a snapshot of the old content reads on.
 pt_load :: proc(pt: ^Piece_Table, src: []u8) {
+    context.allocator = kept(&pt.alloc)
     pt_renew(pt)
     pt.size = len(src)
     push_block(pt, slice.clone(src))
@@ -322,6 +339,7 @@ text_pos :: proc(t: ^Text, off: int) -> Pos {
 // The one mutator. `edits` is sorted by `lo` and disjoint. Rebuilt front to back:
 // O(pieces + edits), not a repair per cut.
 pt_splice_many :: proc(pt: ^Piece_Table, edits: []Splice) {
+    context.allocator = kept(&pt.alloc)
     pt.touched = 0
     if len(edits) == 0 {
         return
@@ -354,6 +372,7 @@ pt_should_compact :: proc(pt: ^Piece_Table) -> bool {
 // One block and one line segment in a fresh arena. A snapshot holding the old arena reads on;
 // the bytes are the same.
 pt_compact :: proc(pt: ^Piece_Table) {
+    context.allocator = kept(&pt.alloc)
     // Both reads use the old arena, so before pt_renew.
     flat := text_read(pt, 0, pt.size)
     starts := make([]int, pt.lines)

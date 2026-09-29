@@ -1,6 +1,8 @@
 package docs
 
+import "base:runtime"
 import "core:slice"
+import "../pt"
 
 // (hole rs-docs :tags (port) :sev missing-port :needs (rs-pt)) not yet a crate; documents, spans and the store are Odin only.
 // Writes queue and store_drain applies them, so gen moves at one place.
@@ -16,6 +18,7 @@ Store :: struct {
     pending: [dynamic]Txn,
     landed:  [dynamic]u64, // tags the last drain applied
     tag:     u64,
+    alloc:   runtime.Allocator, // everything it holds, whoever calls; the first caller's if unset
 }
 
 Slot :: struct {
@@ -40,6 +43,7 @@ Txn :: struct {
 Land :: #type proc(user: rawptr, id: Id, side: rawptr, landed: bool)
 
 store_destroy :: proc(s: ^Store, land: Land, user: rawptr) {
+    context.allocator = pt.kept(&s.alloc)
     for &slot in s.slots {
         if slot.doc != nil {
             doc_destroy(slot.doc)
@@ -61,6 +65,7 @@ store_destroy :: proc(s: ^Store, land: Land, user: rawptr) {
 }
 
 store_open :: proc(s: ^Store, data: []u8 = nil) -> Id {
+    context.allocator = pt.kept(&s.alloc)
     i: u32
     if len(s.free) > 0 {
         i = pop(&s.free)
@@ -78,6 +83,7 @@ store_open :: proc(s: ^Store, data: []u8 = nil) -> Id {
 
 // Every Id for this document stops resolving. A snapshot someone holds outlives it.
 store_close :: proc(s: ^Store, id: Id) -> bool {
+    context.allocator = pt.kept(&s.alloc)
     slot := store_resolve(s, id) or_return
     doc_destroy(slot.doc)
     free(slot.doc)
@@ -132,6 +138,7 @@ store_landed :: proc(s: ^Store) -> []u64 {
 // named by store_landed once it lands.
 store_submit :: proc(s: ^Store, id: Id, gen: u64, splices: []Splice, spans: Maybe(Spans) = nil,
                      side: rawptr = nil, history := History.Step) -> (tag: u64) {
+    context.allocator = pt.kept(&s.alloc)
     owned := make([]Splice, len(splices))
     for e, i in splices {
         owned[i] = e
@@ -150,6 +157,7 @@ store_submit :: proc(s: ^Store, id: Id, gen: u64, splices: []Splice, spans: Mayb
 
 // A transaction whose doc moved since its author read it is dropped whole.
 store_drain :: proc(s: ^Store, land: Land, user: rawptr) -> (applied, stale: int) {
+    context.allocator = pt.kept(&s.alloc)
     clear(&s.landed)
     for t in s.pending {
         slot, ok := store_resolve(s, t.id)

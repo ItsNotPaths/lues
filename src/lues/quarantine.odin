@@ -13,6 +13,7 @@ QUARANTINE_FILE :: "quarantine" // in the state directory
 
 // Reads first, then opens the same file for the handler to append to.
 quarantine_open :: proc(a: ^Kernel) {
+    context = a.ctx
     path := quarantine_path(a)
     if path == "" || a.report != nil {
         return
@@ -33,6 +34,7 @@ quarantine_open :: proc(a: ^Kernel) {
 }
 
 quarantine_destroy :: proc(a: ^Kernel) {
+    context = a.ctx
     if a.report != nil {
         fault_report_fd(0)
         os.close(a.report)
@@ -46,10 +48,12 @@ quarantine_destroy :: proc(a: ^Kernel) {
 }
 
 quarantined :: proc(a: ^Kernel, name: string) -> bool {
+    context = a.ctx
     return slice.contains(a.quarantined[:], name)
 }
 
 quarantine_clear :: proc(a: ^Kernel, name: string) {
+    context = a.ctx
     i, found := slice.linear_search(a.quarantined[:], name)
     if !found {
         return

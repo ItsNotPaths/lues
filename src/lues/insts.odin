@@ -28,11 +28,13 @@ Plug_Inst :: struct {
 // The doc exists before the plugin's code runs, so a faulted open leaves no half-made doc.
 // What open submits lands before this returns; whether that is undoable is the app's call.
 inst_open :: proc(k: ^Kernel, kind: Kind, args := "") -> (id: docs.Id, ok: bool) {
+    context = k.ctx
     kd := kind_get(k, kind) or_return
     if kd.vt.open == nil {
         return
     }
     if k.hooks.doc_open != nil {
+        context = k.host
         id = k.hooks.doc_open(k, kind) or_return
     } else {
         id = docs.store_open(&k.store)
@@ -50,7 +52,9 @@ inst_open :: proc(k: ^Kernel, kind: Kind, args := "") -> (id: docs.Id, ok: bool)
 
 // Through the app when it has a doc_close hook, which must call inst_close.
 doc_close :: proc(k: ^Kernel, id: docs.Id) {
+    context = k.ctx
     if k.hooks.doc_close != nil {
+        context = k.host
         k.hooks.doc_close(k, id)
         return
     }
@@ -60,6 +64,7 @@ doc_close :: proc(k: ^Kernel, id: docs.Id) {
 
 // The app calls this for every doc it closes. A faulted plugin's close does not run.
 inst_close :: proc(k: ^Kernel, id: docs.Id) {
+    context = k.ctx
     inst, held := k.insts[id]
     if !held {
         return
@@ -74,6 +79,7 @@ inst_close :: proc(k: ^Kernel, id: docs.Id) {
 // False: nothing took it. What it submits lands before this returns, so two events in one
 // frame are not written against the same gen.
 inst_event :: proc(k: ^Kernel, id: docs.Id, ev: Event, text: string) -> bool {
+    context = k.ctx
     inst, held := k.insts[id]
     if !held {
         return false
@@ -95,6 +101,7 @@ inst_event :: proc(k: ^Kernel, id: docs.Id, ev: Event, text: string) -> bool {
 // Owners hear .Moved for their own docs. Who to tell is decided first: a fault unloads its
 // plugin, which deletes from insts.
 pump_insts :: proc(k: ^Kernel) -> (latched: bool) {
+    context = k.ctx
     moved := make([dynamic]docs.Id, 0, len(k.insts), context.temp_allocator)
     for id, &inst in k.insts {
         gen := docs.store_gen(&k.store, id) or_continue
@@ -116,6 +123,7 @@ pump_insts :: proc(k: ^Kernel) -> (latched: bool) {
 
 // Watchers hear .Moved for every doc.
 pump_watch :: proc(k: ^Kernel) -> (latched: bool) {
+    context = k.ctx
     ids := docs.store_ids(&k.store)
     for &p, i in k.plugs {
         if p.state != .Live || p.watch == nil {
@@ -194,6 +202,7 @@ watch_landed :: proc(w: ^Watch, gen: u64, landed: []u64) {
 
 // `inst` only when the doc is the caller's own. Free with at_free.
 at_make :: proc(k: ^Kernel, i: int, id: docs.Id) -> At {
+    context = k.ctx
     v := view_make(k, id)
     if v == nil {
         return {}
@@ -203,6 +212,7 @@ at_make :: proc(k: ^Kernel, i: int, id: docs.Id) -> At {
 }
 
 at_free :: proc(k: ^Kernel, at: At) {
+    context = k.ctx
     view_free(k, (^View)(at.snap))
 }
 

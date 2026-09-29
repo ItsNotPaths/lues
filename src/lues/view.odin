@@ -17,6 +17,7 @@ View :: struct {
 
 // nil for a closed doc.
 view_make :: proc(k: ^Kernel, id: docs.Id) -> ^View {
+    context = k.ctx
     d := docs.store_doc(&k.store, id)
     if d == nil {
         return nil
@@ -37,16 +38,21 @@ view_make :: proc(k: ^Kernel, id: docs.Id) -> ^View {
         lines   = uint(src.lines),
         gen     = src.gen,
         doc     = doc_handle(id),
-        app     = k.hooks.side_make(k, id, src.gen) if k.hooks.side_make != nil else nil,
+    }
+    if k.hooks.side_make != nil {
+        context = k.host
+        v.snap.app = k.hooks.side_make(k, id, src.gen)
     }
     return v
 }
 
 view_free :: proc(k: ^Kernel, v: ^View) {
+    context = k.ctx
     if v == nil {
         return
     }
     if k.hooks.side_free != nil {
+        context = k.host
         k.hooks.side_free(k, v.snap.app)
     }
     pt.snapshot_release(v.src)

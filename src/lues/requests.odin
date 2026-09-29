@@ -49,6 +49,7 @@ Bind_Hold :: enum u8 {
 
 // An empty ctx is "global".
 bind_request :: proc(k: ^Kernel, owner, ctx, chord, line: string) -> bool {
+    context = k.ctx
     if owner == "" || chord == "" || line == "" {
         return false
     }
@@ -63,6 +64,7 @@ bind_request :: proc(k: ^Kernel, owner, ctx, chord, line: string) -> bool {
 }
 
 bind_requests_destroy :: proc(k: ^Kernel) {
+    context = k.ctx
     for r in k.reqs {
         delete(r.owner)
         delete(r.ctx)
@@ -75,6 +77,7 @@ bind_requests_destroy :: proc(k: ^Kernel) {
 // Appends a section per owner the file has no header for. A taken chord is written commented
 // and said; a shadowing one goes in live with a note. True when the file changed.
 bind_writeback :: proc(k: ^Kernel, path: string) -> bool {
+    context = k.ctx
     raw, _ := os.read_entire_file(path, context.temp_allocator)
     text := string(raw)
     b := strings.builder_make(context.temp_allocator)
@@ -127,6 +130,7 @@ bind_held :: proc(k: ^Kernel, ctx, chord: string) -> (held: string, hold: Bind_H
     if k.hooks.bind_held == nil {
         return
     }
+    context = k.host
     return k.hooks.bind_held(k, ctx, chord)
 }
 
@@ -144,6 +148,7 @@ Config_Request :: struct {
 
 // Only a held request gets a ledger record.
 config_request :: proc(k: ^Kernel, owner, section, key, value: string) -> bool {
+    context = k.ctx
     if owner == "" || section == "" || key == "" || value == "" {
         return false
     }
@@ -153,6 +158,7 @@ config_request :: proc(k: ^Kernel, owner, section, key, value: string) -> bool {
 }
 
 config_requests_destroy :: proc(k: ^Kernel) {
+    context = k.ctx
     for r in k.creqs {
         delete(r.owner)
         delete(r.section)
@@ -165,6 +171,7 @@ config_requests_destroy :: proc(k: ^Kernel) {
 // Appends a marked block per owner the file has none for. A key the user already set is left
 // alone, except `ordered` keys: sets, joined in place. True when the file changed.
 config_writeback :: proc(k: ^Kernel, path: string, ordered: []string) -> bool {
+    context = k.ctx
     raw, _ := os.read_entire_file(path, context.temp_allocator)
     text := string(raw)
     owners := new_owners(k.creqs[:], text)

@@ -12,6 +12,7 @@ Plug_Cmd :: struct {
 
 // True on exit 0. What it submitted lands before this returns.
 cmd_run :: proc(k: ^Kernel, slot: int, focused: Maybe(docs.Id), args: string) -> bool {
+    context = k.ctx
     if slot < 0 || slot >= len(k.cmds) || k.cmds[slot].owner < 0 {
         say(k, "that command's plugin is not loaded")
         return false

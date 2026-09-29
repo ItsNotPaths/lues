@@ -1,5 +1,6 @@
 package docs
 
+import "base:runtime"
 import "core:bytes"
 import "core:slice"
 import "../pt"
@@ -18,6 +19,7 @@ Doc :: struct {
     changes_next: u64,
     seen:         [dynamic]u64, // per Reader
     side:         rawptr, // the app's per-doc data
+    alloc:        runtime.Allocator, // everything it holds, whoever calls; set by doc_init
 }
 
 // [lo, hi) of the document as it arrived becomes `text`. `tag` is the app's.
@@ -60,6 +62,7 @@ UNDO_MAX :: 1000
 
 doc_init :: proc(d: ^Doc, data: []u8 = nil) {
     d.magic = DOC_MAGIC
+    d.alloc = context.allocator
     pt.pt_init(&d.table)
     if len(data) > 0 {
         pt.pt_load(&d.table, data)
@@ -67,6 +70,7 @@ doc_init :: proc(d: ^Doc, data: []u8 = nil) {
 }
 
 doc_destroy :: proc(d: ^Doc) {
+    context.allocator = pt.kept(&d.alloc)
     drop_snap(d)
     pt.pt_destroy(&d.table)
     doc_forget_undo(d)
@@ -79,6 +83,7 @@ doc_destroy :: proc(d: ^Doc) {
 
 // Nothing can follow a full replace, so the history goes and every reader rebuilds.
 doc_set :: proc(d: ^Doc, data: []u8) {
+    context.allocator = pt.kept(&d.alloc)
     doc_forget_undo(d)
     pt.pt_load(&d.table, data)
     changes_reset(d)
@@ -92,6 +97,7 @@ doc_check :: proc(d: ^Doc) -> bool {
 
 // Edits are against the document as it arrived.
 doc_apply :: proc(d: ^Doc, splices: []Splice, history := History.Step) -> (moved: bool) {
+    context.allocator = pt.kept(&d.alloc)
     ops: [dynamic]Op
     moved = apply(d, splices, nil if history == .Forget else &ops)
     switch {
@@ -117,6 +123,7 @@ doc_apply :: proc(d: ^Doc, splices: []Splice, history := History.Step) -> (moved
 
 // Answers the step, so the app restores Step.before; nil when empty. Valid until the next edit.
 doc_undo :: proc(d: ^Doc) -> ^Step {
+    context.allocator = pt.kept(&d.alloc)
     if len(d.undo) == 0 {
         return nil
     }
@@ -134,6 +141,7 @@ doc_undo :: proc(d: ^Doc) -> ^Step {
 
 // The app restores Step.after.
 doc_redo :: proc(d: ^Doc) -> ^Step {
+    context.allocator = pt.kept(&d.alloc)
     if len(d.redo) == 0 {
         return nil
     }
@@ -150,12 +158,14 @@ doc_redo :: proc(d: ^Doc) -> ^Step {
 }
 
 doc_forget_undo :: proc(d: ^Doc) {
+    context.allocator = pt.kept(&d.alloc)
     clear_steps(&d.undo)
     clear_steps(&d.redo)
 }
 
 // A new reader starts caught up.
 reader_add :: proc(d: ^Doc) -> Reader {
+    context.allocator = pt.kept(&d.alloc)
     for v, i in d.seen {
         if v == READER_FREE {
             d.seen[i] = d.changes_next
@@ -167,6 +177,7 @@ reader_add :: proc(d: ^Doc) -> Reader {
 }
 
 reader_drop :: proc(d: ^Doc, r: Reader) {
+    context.allocator = pt.kept(&d.alloc)
     d.seen[r] = READER_FREE
     trim(d)
 }
@@ -180,6 +191,7 @@ changes_since :: proc(d: ^Doc, r: Reader) -> (changes: []Change, lost: bool) {
 }
 
 changes_ack :: proc(d: ^Doc, r: Reader) {
+    context.allocator = pt.kept(&d.alloc)
     d.seen[r] = d.changes_next
     trim(d)
 }
@@ -217,6 +229,7 @@ pos_less :: proc(a, b: pt.Pos) -> bool {
 
 // One more reference; release with pt.snapshot_release.
 doc_snapshot :: proc(d: ^Doc) -> ^pt.Snapshot {
+    context.allocator = pt.kept(&d.alloc)
     if d.snap == nil {
         d.snap = pt.snapshot_take(&d.table, d.gen)
     }
@@ -226,6 +239,7 @@ doc_snapshot :: proc(d: ^Doc) -> ^pt.Snapshot {
 
 // Drops the cached snapshot: it would pin the arena compaction replaced.
 doc_maintain :: proc(d: ^Doc) {
+    context.allocator = pt.kept(&d.alloc)
     if !pt.pt_should_compact(&d.table) {
         return
     }

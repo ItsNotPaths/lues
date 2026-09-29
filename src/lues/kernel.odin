@@ -1,6 +1,7 @@
 package lues
 
 import "base:runtime"
+import "core:log"
 import "core:os"
 import "../docs"
 import "../work"
@@ -48,7 +49,13 @@ Spec :: struct {
 // (hole rs-kernel :tags (port) :sev missing-port :needs (rs-docs rs-work rs-conf rs-loader rs-extern-panic rs-arenas)) the kernel proper (insts, commands, requests, tokens, io, views) is not a crate.
 Kernel :: struct {
     using spec:  Spec,
-    ctx:         runtime.Context, // api arms run in it
+    // Kernel code runs in ctx, on the kernel's heap and temp arena; every entry point switches
+    // to it. Hooks run in host, the caller's context at kernel_init, so what an app makes in
+    // one is on its own allocator. An app api arm should switch to host too.
+    ctx:         runtime.Context,
+    host:        runtime.Context,
+    heap:        Heap,
+    temp:        runtime.Arena, // reset by kernel_frame
     store:       docs.Store,
     plugs:       [dynamic]Plugin,
     kinds:       [dynamic]Plug_Kind,
@@ -71,9 +78,20 @@ Kernel :: struct {
 // k must not move after this. The hang watchdog is the caller's to start.
 kernel_init :: proc(k: ^Kernel, spec: Spec) -> bool {
     k.spec = spec
-    // (hole rs-arenas :tags (port memory) :sev missing-port :needs (kernel-arenas pkey-tagging plugin-arenas)) arenas ride Odin's context allocator; Rust has no stable per-collection allocator to carry them.
-    // (hole kernel-arenas :tags (memory) :sev missing-system) the kernel allocates from libc malloc, the heap plugins share, so a plugin overrun can crash kernel code.
+    k.host = context
+    // (hole rs-arenas :tags (port memory) :sev missing-port :needs (pkey-tagging plugin-arenas)) arenas ride Odin's context allocator; Rust has no stable per-collection allocator to carry them.
+    if !heap_init(&k.heap) {
+        return false
+    }
     k.ctx = context
+    k.ctx.allocator = heap_allocator(&k.heap)
+    if runtime.arena_init(&k.temp, 0, k.ctx.allocator) != nil {
+        heap_destroy(&k.heap)
+        return false
+    }
+    k.ctx.temp_allocator = runtime.arena_allocator(&k.temp)
+    context = k.ctx
+    k.store.alloc = k.ctx.allocator
     tokens_seed(k)
     api_init(k)
     quarantine_open(k)
@@ -81,8 +99,13 @@ kernel_init :: proc(k: ^Kernel, spec: Spec) -> bool {
     return fault_install()
 }
 
-// Io first: a plugin's close must not see a completion arrive.
+// Io first: a plugin's close must not see a completion arrive. What the kernel leaked is
+// logged, as an error: a test fails on it.
 kernel_destroy :: proc(k: ^Kernel) {
+    if k.ctx.allocator.data != &k.heap {
+        return // kernel_init failed or never ran
+    }
+    context = k.ctx
     quarantine_destroy(k)
     fault_trace_close(k)
     io_destroy(k)
@@ -114,11 +137,19 @@ kernel_destroy :: proc(k: ^Kernel) {
     bind_requests_destroy(k)
     config_requests_destroy(k)
     docs.store_destroy(&k.store, land_side, k)
+    runtime.arena_destroy(&k.temp)
+    if leaked := heap_destroy(&k.heap); leaked != 0 {
+        context = k.host
+        log.errorf("lues: the kernel leaked %d allocations", leaked)
+    }
 }
 
 // Io before the moved pumps, so what an io handler wrote is reported once. True when a plugin
-// latched: call again next frame even if nothing moved.
+// latched: call again next frame even if nothing moved. Frees the kernel's temp arena first:
+// a temp-allocated result from the kernel is good until the next kernel_frame.
 kernel_frame :: proc(k: ^Kernel) -> (latched: bool) {
+    context = k.ctx
+    free_all(context.temp_allocator)
     kernel_settle(k)
     io_pump(k)
     return pump_insts(k) | pump_watch(k)
@@ -126,12 +157,14 @@ kernel_frame :: proc(k: ^Kernel) -> (latched: bool) {
 
 say :: proc(k: ^Kernel, text: string) {
     if k.hooks.say != nil {
+        context = k.host
         k.hooks.say(k, text)
     }
 }
 
 changed :: proc(k: ^Kernel) {
     if k.hooks.changed != nil {
+        context = k.host
         k.hooks.changed(k)
     }
 }
@@ -139,12 +172,14 @@ changed :: proc(k: ^Kernel) {
 land_side :: proc(user: rawptr, id: docs.Id, side: rawptr, landed: bool) {
     k := (^Kernel)(user)
     if k.hooks.land != nil {
+        context = k.host
         k.hooks.land(k, id, side, landed)
     }
 }
 
 // Every drain goes through here, or a plugin is told about its own write.
 kernel_settle :: proc(k: ^Kernel) {
+    context = k.ctx
     docs.store_drain(&k.store, land_side, k)
     if landed := docs.store_landed(&k.store); len(landed) > 0 {
         for id, &inst in k.insts {
@@ -159,6 +194,7 @@ kernel_settle :: proc(k: ^Kernel) {
         }
     }
     if k.hooks.drained != nil {
+        context = k.host
         k.hooks.drained(k)
     }
 }

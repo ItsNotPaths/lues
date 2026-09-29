@@ -20,7 +20,7 @@ nest_run :: proc "c" (api: ^lues.Api, self: lues.Self, line: [^]u8, n: uint) -> 
     if !ok {
         return 1
     }
-    context = k.ctx
+    context = k.host
     name, _, args := strings.partition(string(line[:n]), " ")
     return 0 if run(k, name, nil, args) else 1
 }
