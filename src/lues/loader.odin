@@ -6,6 +6,8 @@ import "core:os"
 import "core:path/filepath"
 import "core:slice"
 import "core:strings"
+import "core:sys/linux"
+import "core:sys/posix"
 import "../docs"
 
 // Slots are tombstoned, never compacted: a bind row may hold an index across a reload.
@@ -16,6 +18,7 @@ Plugin :: struct {
     name:    string, // owned
     path:    string, // owned
     lib:     dynlib.Library,
+    copy:    Maybe(linux.Fd), // the memfd it was mapped from; see load_fresh
     base:    uintptr, // where dlopen mapped it
     gen:     u32,
     state:   Plug_State,
@@ -23,6 +26,7 @@ Plugin :: struct {
     watch:   Event_Fn,
     seen:    map[docs.Id]Watch,
     held:    [dynamic]^View, // snapshots it holds past a call; released at unload
+    objects: [dynamic]uintptr, // bases of objects it adopted; guard 1 blames it for these
 }
 
 // Faulted keeps the library mapped: dlclose would run more of the code that died.
@@ -52,15 +56,14 @@ ledger_add :: proc(k: ^Kernel, i: int, tag: u32, idx: int) {
     append(&k.plugs[i].ledger, Record{what = .App, idx = idx, tag = tag})
 }
 
-// (hole rs-loader :tags (port loader) :sev missing-port :needs (rs-plugin-abi rs-fault-handlers reload-fresh-map)) the loader, ledger and quarantine are Odin only.
+// (hole rs-loader :tags (port loader) :sev missing-port :needs (rs-plugin-abi rs-fault-handlers)) the loader, ledger and quarantine are Odin only.
 loader_load :: proc(k: ^Kernel, path: string) -> bool {
     name := strings.trim_suffix(filepath.base(path), ".so")
     if loader_find(k, name) >= 0 {
         say(k, fmt.tprintf("%s is already loaded", name))
         return false
     }
-    // (hole reload-fresh-map :tags (loader fault) :sev wrong-behavior) a faulted plugin stays mapped, so reloading it gets the same image back with its old globals instead of a clean copy.
-    lib, loaded := dynlib.load_library(path)
+    lib, copy, loaded := load_fresh(path)
     if !loaded {
         say(k, fmt.tprintf("%s: %s", path, dynlib.last_error()))
         return false
@@ -68,6 +71,7 @@ loader_load :: proc(k: ^Kernel, path: string) -> bool {
     sym, found := dynlib.symbol_address(lib, ENTRY)
     if !found {
         dynlib.unload_library(lib)
+        copy_release(copy)
         say(k, fmt.tprintf("%s exports no %s", name, ENTRY))
         return false
     }
@@ -76,6 +80,7 @@ loader_load :: proc(k: ^Kernel, path: string) -> bool {
     i := loader_slot(k, name, path)
     p := &k.plugs[i]
     p.lib = lib
+    p.copy = copy
     p.base = fault_object_base(sym)
     p.gen += 1
     p.state = .Live
@@ -183,6 +188,73 @@ loader_path :: proc(k: ^Kernel, name: string) -> string {
     return path
 }
 
+// dlopen shares a mapping with any earlier load of the same path or inode, and a faulted
+// plugin stays mapped: a reload would get the old image back, globals as they were when it
+// died. So each load maps its own copy, from a memfd. dlopen also matches by name, so the fd
+// stays open while its image is mapped: no later copy is given the same /proc/self/fd name.
+// dladdr names that path; the fault trace names `path` in its place. If the copy can't be
+// made, `path` is loaded as is.
+@(private = "file")
+load_fresh :: proc(path: string) -> (lib: dynlib.Library, copy: Maybe(linux.Fd), ok: bool) {
+    fd, copied := fresh_copy(path)
+    if !copied {
+        lib, ok = dynlib.load_library(path)
+        return lib, nil, ok
+    }
+    if lib, ok = dynlib.load_library(copy_name(fd)); !ok {
+        linux.close(fd)
+        return nil, nil, false
+    }
+    return lib, fd, true
+}
+
+// After dlclose. dlclose can leave an object mapped (NODELETE, as one with thread-local
+// destructors is); then its fd stays open for good.
+@(private = "file")
+copy_release :: proc(copy: Maybe(linux.Fd)) {
+    fd, held := copy.?
+    if !held {
+        return
+    }
+    NOW_NOLOAD :: 0x2 | 0x4 // glibc's RTLD_NOW | RTLD_NOLOAD; posix has no NOLOAD
+    name := strings.clone_to_cstring(copy_name(fd), context.temp_allocator)
+    if still := posix.dlopen(name, transmute(posix.RTLD_Flags)i32(NOW_NOLOAD)); still != nil {
+        posix.dlclose(still)
+        return
+    }
+    linux.close(fd)
+}
+
+// Temp-allocated.
+@(private = "file")
+copy_name :: proc(fd: linux.Fd) -> string {
+    return fmt.tprintf("/proc/self/fd/%d", fd)
+}
+
+@(private = "file")
+fresh_copy :: proc(path: string) -> (fd: linux.Fd, ok: bool) {
+    src, err := os.open(path)
+    if err != nil {
+        return -1, false
+    }
+    defer os.close(src)
+    left, _ := os.file_size(src)
+    name := strings.clone_to_cstring(filepath.base(path), context.temp_allocator)
+    errno: linux.Errno
+    if fd, errno = linux.memfd_create(name, {.CLOEXEC}); errno != .NONE {
+        return -1, false
+    }
+    for left > 0 {
+        n, e := linux.sendfile(fd, linux.Fd(os.fd(src)), nil, uint(left))
+        if e != .NONE || n <= 0 {
+            linux.close(fd)
+            return -1, false
+        }
+        left -= i64(n)
+    }
+    return fd, true
+}
+
 self_handle :: proc(k: ^Kernel, i: int) -> Self {
     return Self(pack(u32(i), k.plugs[i].gen))
 }
@@ -204,6 +276,7 @@ unload :: proc(k: ^Kernel, i: int) {
         view_free(k, v)
     }
     clear(&k.plugs[i].held)
+    clear(&k.plugs[i].objects)
     if who, published := producer_find(k, k.plugs[i].name); published {
         docs.spans_forget(&k.store, who)
     }
@@ -237,7 +310,9 @@ unload :: proc(k: ^Kernel, i: int) {
     if p.state == .Live {
         dynlib.unload_library(p.lib)
         p.state = .Unloaded
+        copy_release(p.copy)
     }
+    p.copy = nil // a faulted plugin's stays open with its mapping
     p.lib = nil
     changed(k)
 }

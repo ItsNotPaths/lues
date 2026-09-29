@@ -50,7 +50,7 @@ dispatch :: proc(k: ^Kernel, i: int, c: Call) -> (r: Ret, ok: bool) {
         fault_reap() // locals of this frame are not restored
         return {}, false
     }
-    fault_arm(k, i, k.plugs[i].base, k.plugs[i].name)
+    fault_arm(k, i)
     r = run(k, i, c)
     fault_disarm()
     return r, intact(k, i)

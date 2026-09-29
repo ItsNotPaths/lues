@@ -36,6 +36,61 @@ segv_test :: proc(t: ^testing.T) {
     testing.expect(t, run(&k, "hello"))
 }
 
+// A reload after a fault maps a fresh copy: the dead image's globals don't come back.
+@(test)
+fresh_test :: proc(t: ^testing.T) {
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Api_Box
+    defer lues.kernel_destroy(&k)
+    if _, ok := plug_host(t, &k, &box, &said, "fresh"); !ok {
+        return
+    }
+
+    testing.expect(t, run(&k, "count"))
+    testing.expect(t, run(&k, "count"))
+    testing.expect_value(t, strings.to_string(said), "count 2")
+    testing.expect(t, !run(&k, "boom"))
+    testing.expect(t, lues.loader_load(&k, lues.loader_path(&k, "cplug")), strings.to_string(said))
+    testing.expect(t, run(&k, "count"))
+    testing.expect_value(t, strings.to_string(said), "count 1")
+}
+
+// A fault in an object the plugin adopted unloads it, the same as one in its own .so.
+@(test)
+adopt_test :: proc(t: ^testing.T) {
+    data, staged := stage(t, "adopt", "cplug", "grammar")
+    if !staged {
+        return
+    }
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Api_Box
+    testing.expect(t, test_host(&k, &box, {home = {data = data}}))
+    defer lues.kernel_destroy(&k)
+    k.hooks.say, k.user = heard, &said
+    if !testing.expect(t, lues.loader_load(&k, lues.loader_path(&k, "cplug")), strings.to_string(said)) {
+        return
+    }
+    i := lues.loader_find(&k, "cplug")
+
+    testing.expect(t, !run(&k, "adoptk"), "adopted the kernel's object")
+    testing.expect_value(t, len(k.plugs[i].objects), 0) // its own .so is not recorded
+    testing.expect(t, !run(&k, "adopt", args = lues.loader_path(&k, "grammar")))
+    testing.expect_value(t, lues.loader_find(&k, "cplug"), -1)
+    testing.expect_value(t, k.plugs[i].state, lues.Plug_State.Faulted)
+    testing.expect_value(t, len(k.plugs[i].objects), 0)
+    text := strings.to_string(said)
+    testing.expect(t, strings.contains(text, "cplug") && strings.contains(text, "SIGSEGV"), text)
+    testing.expect(t, !lues.quarantined(&k, "cplug"))
+}
+
+// The same fault, not adopted, is in nobody's code: the process dies and nobody is quarantined.
+@(test)
+unadopted_test :: proc(t: ^testing.T) {
+    crash(t, "unadopted", "scan", .SIGSEGV, blamed = false)
+}
+
 // The trace's first line is the plugin's own object, with an offset.
 @(test)
 trace_test :: proc(t: ^testing.T) {
@@ -158,11 +213,11 @@ fail_thread_test :: proc(t: ^testing.T) {
 }
 
 // Runs `cmd` in a child, this test binary again with only crash_child selected, and expects it
-// to die of `sig` with cplug quarantined.
+// to die of `sig`, with cplug quarantined when `blamed`.
 @(private = "file")
-crash :: proc(t: ^testing.T, name, cmd: string, sig: posix.Signal) {
+crash :: proc(t: ^testing.T, name, cmd: string, sig: posix.Signal, blamed := true) {
     sync.guard(&state_lock)
-    data, staged := stage(t, name, "cplug")
+    data, staged := stage(t, name, "cplug", "grammar")
     if !staged {
         return
     }
@@ -174,7 +229,7 @@ crash :: proc(t: ^testing.T, name, cmd: string, sig: posix.Signal) {
                     "the child did not die of %v: %v %v %s", sig, err, state, errs)
     file, _ := filepath.join({data, lues.QUARANTINE_FILE}, context.temp_allocator)
     raw, _ := os.read_entire_file(file, context.temp_allocator)
-    testing.expect_value(t, string(raw), "cplug\n")
+    testing.expect_value(t, string(raw), "cplug\n" if blamed else "")
 }
 
 @(private = "file")
@@ -197,6 +252,7 @@ crash_child :: proc(t: ^testing.T) {
     k.hooks.say, k.user = heard, &said
     testing.expect(t, lues.loader_load(&k, lues.loader_path(&k, "cplug")))
     id := docs.store_open(&k.store)
-    run(&k, os.get_env(CRASH_CMD_ENV, context.temp_allocator), id)
+    // Every command gets the grammar's path; only scan reads it.
+    run(&k, os.get_env(CRASH_CMD_ENV, context.temp_allocator), id, lues.loader_path(&k, "grammar"))
     testing.fail_now(t, "the process survived")
 }

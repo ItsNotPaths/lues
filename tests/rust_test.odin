@@ -62,7 +62,8 @@ rust_hold_test :: proc(t: ^testing.T) {
     testing.expect_value(t, len(k.plugs[i].held), 0) // released for it
 }
 
-// A panic is caught at the seam: the command fails and the plugin stays loaded.
+// A panic is caught at the seam and becomes fail: unloaded, named with the panic's message,
+// and a reload runs again.
 @(test)
 rust_panic_test :: proc(t: ^testing.T) {
     said := strings.builder_make(context.temp_allocator)
@@ -73,7 +74,11 @@ rust_panic_test :: proc(t: ^testing.T) {
         return
     }
     testing.expect(t, !run(&k, "rs-panic", nil, "now"))
-    testing.expect(t, lues.loader_find(&k, "rustplug") >= 0)
+    testing.expect_value(t, lues.loader_find(&k, "rustplug"), -1)
+    testing.expect(t, strings.contains(strings.to_string(said), "rustplug failed: asked to: now"), strings.to_string(said))
+    testing.expect(t, !lues.quarantined(&k, "rustplug"))
+
+    testing.expect(t, lues.loader_load(&k, lues.loader_path(&k, "rustplug")), strings.to_string(said))
     id := docs.store_open(&k.store, transmute([]u8)string("still"))
     testing.expect(t, run(&k, "rs-read", id))
     testing.expect_value(t, strings.to_string(said), "still")

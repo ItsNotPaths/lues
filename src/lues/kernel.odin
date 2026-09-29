@@ -95,6 +95,7 @@ kernel_destroy :: proc(k: ^Kernel) {
         delete(p.ledger)
         delete(p.seen)
         delete(p.held)
+        delete(p.objects)
     }
     delete(k.plugs)
     for kd in k.kinds {

@@ -1,5 +1,6 @@
 package lues
 
+import "core:c"
 import "core:fmt"
 import "core:slice"
 import "core:strings"
@@ -35,6 +36,7 @@ api_init :: proc(k: ^Kernel) {
         io_fd            = api_io_fd,
         io_close         = api_io_close,
         fail             = api_fail,
+        adopt            = api_adopt,
         // (hole plugin-calls :tags (compose abi) :sev missing-system :needs (nested-dispatch-blame)) no call arm: a plugin cannot run another plugin's command.
         // (hole plugin-hooks :tags (compose abi) :sev missing-system :needs (nested-dispatch-blame)) no hook arms: a plugin cannot declare a hook point for others to join.
         // (hole doc-vars :tags (compose abi) :sev missing-system) no per-document variables: plugins cannot share named state.
@@ -289,6 +291,39 @@ api_fail :: proc "c" (api: ^Api, self: Self, msg: [^]u8, msg_len: uint) -> ! {
         }
     }
     fault_fail(name, string(msg[:msg_len]) if msg != nil else "")
+}
+
+// Idempotent, and a no-op for the plugin's own .so. Refused for an object that isn't the
+// plugin's to answer for: the kernel's, libc's (unwinding a fault there could leave its locks
+// held) or another plugin's.
+@(private = "file")
+api_adopt :: proc "c" (api: ^Api, self: Self, addr: rawptr) -> c.int32_t {
+    k, i, ok := api_kernel(api, self)
+    defer api_done()
+    if !ok {
+        return 1
+    }
+    context = k.ctx
+    p := &k.plugs[i]
+    base := fault_object_base(addr)
+    if base == 0 || fault_kernel_object(base) {
+        return 1
+    }
+    for q, j in k.plugs {
+        if j != i && q.state == .Live && q.base == base {
+            return 1
+        }
+    }
+    if base == p.base || slice.contains(p.objects[:], base) {
+        return 0
+    }
+    if len(p.objects) >= FAULT_OBJECTS {
+        say(k, fmt.tprintf("%s: more than %d adopted objects", p.name, FAULT_OBJECTS))
+        return 1
+    }
+    append(&p.objects, base)
+    fault_adopt(i, base)
+    return 0
 }
 
 @(private = "file")

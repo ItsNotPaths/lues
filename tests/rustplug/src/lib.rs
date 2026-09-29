@@ -93,7 +93,8 @@ mod sys {
         pub io_watch: Unused,
         pub io_fd: Unused,
         pub io_close: Unused,
-        pub fail: Unused,
+        pub fail: unsafe extern "C" fn(*const Api, Self_, *const c_char, usize) -> !,
+        pub adopt: Unused,
     }
 
     // The sizes lues.h asserts.
@@ -102,7 +103,7 @@ mod sys {
     const _: () = assert!(size_of::<Snapshot>() == 104);
     const _: () = assert!(size_of::<At>() == 40);
     const _: () = assert!(size_of::<Edit>() == 48);
-    const _: () = assert!(size_of::<Api>() == 144);
+    const _: () = assert!(size_of::<Api>() == 152);
 }
 
 /// The kernel's vtable and this load's handle. Copy: both are plain values the kernel owns.
@@ -179,10 +180,34 @@ fn text(s: &sys::Snapshot) -> Vec<u8> {
     out
 }
 
-/// A panic must not unwind into the kernel's frames: it becomes exit code 2.
-// (hole sdk-shims :tags (sdk) :sev missing-system) a caught panic is only exit code 2 and the plugin stays loaded; no SDK routes a panic to fail.
-fn guarded(f: impl FnOnce() -> i32) -> i32 {
-    catch_unwind(AssertUnwindSafe(f)).unwrap_or(2)
+/// A panic must not unwind into the kernel's frames. It is caught here and becomes `fail`,
+/// which unloads the plugin and never returns: it jumps back to the kernel over this frame and
+/// the entry point's, so neither may hold anything with a destructor by then. Before API 2 it
+/// is exit code 2.
+fn guarded(api: *const sys::Api, me: sys::Self_, f: impl FnOnce() -> i32) -> i32 {
+    let (msg, n) = match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(code) => return code,
+        Err(payload) => said(&*payload), // the payload is dropped here
+    };
+    unsafe {
+        if (*api).version < 2 {
+            return 2;
+        }
+        ((*api).fail)(api, me, msg.as_ptr().cast(), n)
+    }
+}
+
+/// A panic's message, cut to fit a buffer that needs no drop.
+fn said(payload: &(dyn std::any::Any + Send)) -> ([u8; 256], usize) {
+    let text = payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("panicked");
+    let mut buf = [0; 256];
+    let n = text.len().min(buf.len());
+    buf[..n].copy_from_slice(&text.as_bytes()[..n]);
+    (buf, n)
 }
 
 fn args<'a>(p: *const c_char, n: usize) -> &'a [u8] {
@@ -195,7 +220,7 @@ static HELD: AtomicPtr<sys::Snapshot> = AtomicPtr::new(ptr::null_mut());
 /// Says the focused doc's bytes, read in place.
 unsafe extern "C" fn read(api: *const sys::Api, me: sys::Self_, at: *const sys::At,
                           _: *const c_char, _: usize) -> i32 {
-    guarded(|| {
+    guarded(api, me, || {
         let api = Api { api, me };
         match unsafe { (*at).snap.as_ref() } {
             Some(s) => {
@@ -210,7 +235,7 @@ unsafe extern "C" fn read(api: *const sys::Api, me: sys::Self_, at: *const sys::
 /// Uppercases the focused doc with one edit.
 unsafe extern "C" fn upper(api: *const sys::Api, me: sys::Self_, at: *const sys::At,
                            _: *const c_char, _: usize) -> i32 {
-    guarded(|| {
+    guarded(api, me, || {
         let api = Api { api, me };
         let Some(s) = (unsafe { (*at).snap.as_ref() }) else { return 1 };
         api.submit(s.doc, s.generation, 0, s.size, &text(s).to_ascii_uppercase());
@@ -221,7 +246,7 @@ unsafe extern "C" fn upper(api: *const sys::Api, me: sys::Self_, at: *const sys:
 /// Takes a snapshot of the focused doc and keeps it past this call.
 unsafe extern "C" fn hold(api: *const sys::Api, me: sys::Self_, at: *const sys::At,
                           _: *const c_char, _: usize) -> i32 {
-    guarded(|| {
+    guarded(api, me, || {
         let api = Api { api, me };
         let doc = unsafe { (*at).doc };
         let Some(held) = api.hold(doc) else { return 1 };
@@ -236,7 +261,7 @@ unsafe extern "C" fn hold(api: *const sys::Api, me: sys::Self_, at: *const sys::
 /// Says the held snapshot's bytes, then releases it.
 unsafe extern "C" fn release(api: *const sys::Api, me: sys::Self_, _: *const sys::At,
                              _: *const c_char, _: usize) -> i32 {
-    guarded(|| {
+    guarded(api, me, || {
         let api = Api { api, me };
         let snap = HELD.swap(ptr::null_mut(), Ordering::Relaxed);
         if snap.is_null() {
@@ -251,7 +276,7 @@ unsafe extern "C" fn release(api: *const sys::Api, me: sys::Self_, _: *const sys
 /// Releases one snapshot twice; the second must be ignored.
 unsafe extern "C" fn double(api: *const sys::Api, me: sys::Self_, at: *const sys::At,
                             _: *const c_char, _: usize) -> i32 {
-    guarded(|| {
+    guarded(api, me, || {
         let api = Api { api, me };
         let Some(held) = api.hold(unsafe { (*at).doc }) else { return 1 };
         let snap = held.snap;
@@ -261,16 +286,16 @@ unsafe extern "C" fn double(api: *const sys::Api, me: sys::Self_, at: *const sys
     })
 }
 
-unsafe extern "C" fn panic(_: *const sys::Api, _: sys::Self_, _: *const sys::At,
+unsafe extern "C" fn panic(api: *const sys::Api, me: sys::Self_, _: *const sys::At,
                            a: *const c_char, n: usize) -> i32 {
-    guarded(|| panic!("asked to: {}", String::from_utf8_lossy(args(a, n))))
+    guarded(api, me, || panic!("asked to: {}", String::from_utf8_lossy(args(a, n))))
 }
 
 /// # Safety
 /// Called once by the kernel, with its own vtable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lues_main(api: *const sys::Api, me: sys::Self_) -> i32 {
-    guarded(|| {
+    guarded(api, me, || {
         let app = unsafe { CStr::from_ptr((*api).app) };
         if app.to_bytes() != b"test" {
             return 1;

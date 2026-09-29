@@ -1,6 +1,7 @@
 /* The C test plugin, against lues.h only. Each test adds the arms it needs. */
 #define _POSIX_C_SOURCE 200809L
 
+#include <dlfcn.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <time.h>
@@ -57,6 +58,52 @@ static int32_t failoff(const lues_api *api, lues_self self, const lues_at *at, c
     }
     pthread_join(t, NULL);
     return 0;
+}
+
+/* `scan <path>` dlopens the grammar at path and faults inside it; `adopt <path>` adopts it
+ * first. Exits 1 when it can't be opened or adopted. */
+typedef int (*scan_fn)(const int *at);
+
+static int32_t grammar(const lues_api *api, lues_self self, const char *args, size_t args_len,
+                       int adopt) {
+    char    path[256];
+    void   *lib;
+    scan_fn scan;
+    if (args_len >= sizeof path) {
+        return 1;
+    }
+    memcpy(path, args, args_len);
+    path[args_len] = 0;
+    lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (lib == NULL || (scan = (scan_fn)dlsym(lib, "grammar_scan")) == NULL) {
+        return 1;
+    }
+    if (adopt && api->adopt(api, self, (const void *)scan) != 0) {
+        return 1;
+    }
+    return scan(NOWHERE);
+}
+
+static int32_t scan(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                    size_t args_len) {
+    (void)at;
+    return grammar(api, self, args, args_len, 0);
+}
+
+static int32_t adopt(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                     size_t args_len) {
+    (void)at;
+    return grammar(api, self, args, args_len, 1);
+}
+
+/* Adopts its own .so, then the kernel's: exits with the second's answer. */
+static int32_t adoptk(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                      size_t args_len) {
+    (void)at, (void)args, (void)args_len;
+    if (api->adopt(api, self, (const void *)boom) != 0) {
+        return 2;
+    }
+    return api->adopt(api, self, (const void *)api->submit);
 }
 
 /* Bounded, so a broken watchdog still lets the test finish. */
@@ -181,6 +228,16 @@ static void say_n(const lues_api *api, lues_self self, const char *what, int n) 
     char buf[32];
     int  len = snprintf(buf, sizeof buf, "%s %d", what, n);
     api->message(api, self, buf, (size_t)len);
+}
+
+/* Says how many times it ran in this load: a fresh load starts from 1. */
+static int COUNT;
+
+static int32_t count(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                     size_t args_len) {
+    (void)at, (void)args, (void)args_len;
+    say_n(api, self, "count", ++COUNT);
+    return 0;
 }
 
 /* The `note` kind: open fills the doc with its args (`boom` faults), text appends, moved is
@@ -346,5 +403,9 @@ LUES_MAIN {
     api->register_command(api, self, LIT("watchfile"), LIT("watch a file for the doc"), watchfile);
     api->register_command(api, self, LIT("tok"), LIT("say the token it got"), tok);
     api->register_command(api, self, LIT("short"), LIT("submit a short edit"), short_edit);
+    api->register_command(api, self, LIT("count"), LIT("say how many times it ran"), count);
+    api->register_command(api, self, LIT("scan"), LIT("fault in a dlopened grammar"), scan);
+    api->register_command(api, self, LIT("adopt"), LIT("adopt a grammar, then fault in it"), adopt);
+    api->register_command(api, self, LIT("adoptk"), LIT("adopt the kernel's object"), adoptk);
     return 0;
 }

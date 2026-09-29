@@ -3,10 +3,10 @@ package lues
 import "core:c"
 import "../docs"
 
-// (hole rs-plugin-abi :tags (port abi) :sev missing-port :needs (plugin-calls plugin-hooks advice doc-vars adopt-objects plugin-arenas)) lues.h is hand-kept against this file; no repr(C) Rust mirror for cbindgen to generate it from.
+// (hole rs-plugin-abi :tags (port abi) :sev missing-port :needs (plugin-calls plugin-hooks advice doc-vars plugin-arenas)) lues.h is hand-kept against this file; no repr(C) Rust mirror for cbindgen to generate it from.
 // include/lues.h mirrors this.
 
-API :: 2 // 2: fail
+API :: 3 // 2: fail. 3: adopt
 
 ENTRY :: "lues_main"
 
@@ -169,6 +169,8 @@ Api :: struct {
     io_close:         proc "c" (api: ^Api, self: Self, io: Io),
     // API 2. Unloads the caller the way a fault does, and never returns.
     fail:             proc "c" (api: ^Api, self: Self, msg: [^]u8, msg_len: c.size_t) -> !,
+    // API 3. 0 when faults in the object holding addr are the plugin's from now on.
+    adopt:            proc "c" (api: ^Api, self: Self, addr: rawptr) -> c.int32_t,
 }
 
 #assert(size_of(Block) == 16)
@@ -181,7 +183,7 @@ Api :: struct {
 #assert(size_of(Span_Pub) == 40)
 #assert(size_of(Kind_Vt) == 24)
 #assert(size_of(Kind_Spec) == 64)
-#assert(size_of(Api) == 144)
+#assert(size_of(Api) == 152)
 
 pack :: proc "contextless" (lo, hi: u32) -> u64 {
     return u64(lo) | u64(hi) << 32

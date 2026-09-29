@@ -9,7 +9,7 @@ import "core:sys/posix"
 import "core:time"
 
 // A fault or hang in plugin code unwinds back to dispatch, but only when the pc is inside that
-// plugin's .so (guard 1) and no api call is in progress (guard 2). Anything else dies.
+// plugin's .so or an object it adopted (guard 1) and no api call is in progress (guard 2). Anything else dies.
 // armed and busy are atomic so the optimiser cannot fold them; the guard is per thread
 // because the jump must land on the stack that faulted.
 
@@ -26,6 +26,7 @@ foreign libc_ {
     backtrace :: proc(buf: [^]rawptr, size: c.int) -> c.int ---
     backtrace_symbols_fd :: proc(buf: [^]rawptr, size: c.int, fd: posix.FD) ---
     abort :: proc() -> ! ---
+    gnu_get_libc_version :: proc() -> cstring ---
 }
 
 // glibc's is 200 bytes.
@@ -46,20 +47,26 @@ PLUG_HANG_MS :: 5000
 
 @(private = "file")
 Guard :: struct {
-    env:    Jmp_Buf,
-    ctx:    runtime.Context, // the arming frame's, so recovery can allocate
-    app:    ^Kernel,
-    who:    int,
-    base:   uintptr,
-    why:    string, // a literal, or fail's copy in `said`
+    env:      Jmp_Buf,
+    ctx:      runtime.Context, // the arming frame's, so recovery can allocate
+    app:      ^Kernel,
+    who:      int,
+    base:     uintptr,
+    // The plugin's adopted objects, copied at arm time: the handler cannot follow its array.
+    objects:  [FAULT_OBJECTS]uintptr,
+    nobjects: int,
+    why:      string, // a literal, or fail's copy in `said`
     // The plugin's name plus a newline, copied at arm time: the handler cannot allocate.
-    name:   [NAME_MAX]u8,
-    n:      int,
-    said:   [SAID_MAX]u8,
-    traced: bool,
-    armed:  bool, // atomic
-    busy:   bool, // atomic; inside an api call
+    name:     [NAME_MAX]u8,
+    n:        int,
+    said:     [SAID_MAX]u8,
+    traced:   bool,
+    armed:    bool, // atomic
+    busy:     bool, // atomic; inside an api call
 }
+
+// Adopted objects per plugin; past this, adopt refuses.
+FAULT_OBJECTS :: 64
 
 // A longer name is truncated and quarantines nobody.
 @(private = "file")
@@ -81,7 +88,7 @@ g_installed: bool
 
 // --- install ---
 
-// (hole rs-fault-handlers :tags (port fault) :sev missing-port :needs (rs-dispatch-trampoline pkey-tagging adopt-objects)) not ported; a Rust host must also install after std and take over its stack-overflow SIGSEGV handler.
+// (hole rs-fault-handlers :tags (port fault) :sev missing-port :needs (rs-dispatch-trampoline pkey-tagging)) not ported; a Rust host must also install after std and take over its stack-overflow SIGSEGV handler.
 // Handlers are per process, the alt stack per thread, so a second caller only adds its stack.
 fault_install :: proc() -> bool {
     // Keep an existing alt stack: ASan unmaps its own at thread exit.
@@ -126,6 +133,13 @@ fault_object_base :: proc(addr: rawptr) -> uintptr {
     return uintptr(info.dli_fbase)
 }
 
+// This object and libc, which no plugin may adopt. libc is placed by a string it returns: the
+// address of one of its functions may be a PLT stub in the executable.
+fault_kernel_object :: proc(base: uintptr) -> bool {
+    return base == fault_object_base(rawptr(fault_install)) ||
+           base == fault_object_base(rawptr(gnu_get_libc_version()))
+}
+
 // --- arming, and coming back ---
 
 fault_armed :: proc() -> bool {
@@ -137,9 +151,12 @@ fault_env :: proc() -> ^Jmp_Buf {
 }
 
 // Call after the sigsetjmp that fills the buffer.
-fault_arm :: proc(a: ^Kernel, i: int, base: uintptr, name := "") {
+fault_arm :: proc(a: ^Kernel, i: int) {
+    p := &a.plugs[i]
     g := &g_guard
-    g.ctx, g.app, g.who, g.base, g.why, g.traced = context, a, i, base, "", false
+    g.ctx, g.app, g.who, g.base, g.why, g.traced = context, a, i, p.base, "", false
+    g.nobjects = copy(g.objects[:], p.objects[:])
+    name := p.name
     g.n = min(len(name), NAME_MAX - 1)
     copy(g.name[:g.n], name[:g.n])
     g.name[g.n] = '\n'
@@ -147,6 +164,15 @@ fault_arm :: proc(a: ^Kernel, i: int, base: uintptr, name := "") {
     intrinsics.atomic_store(&g.busy, false)
     intrinsics.atomic_store(&g.armed, true)
     watch_arm()
+}
+
+// An object adopted during the call counts at once, not from the next dispatch.
+fault_adopt :: proc(i: int, base: uintptr) {
+    g := &g_guard
+    if intrinsics.atomic_load(&g.armed) && g.who == i && g.nobjects < FAULT_OBJECTS {
+        g.objects[g.nobjects] = base
+        g.nobjects += 1
+    }
 }
 
 fault_disarm :: proc() {
@@ -251,8 +277,16 @@ in_plugin :: proc "contextless" (pc: uintptr) -> bool {
     if pc == 0 || g.base == 0 || dladdr(rawptr(pc), &info) == 0 {
         return false
     }
-    // (hole adopt-objects :tags (fault abi) :sev missing-system) only the plugin's own .so counts; a fault in an object it dlopened (a tree-sitter grammar) kills the process.
-    return uintptr(info.dli_fbase) == g.base
+    base := uintptr(info.dli_fbase)
+    if base == g.base {
+        return true
+    }
+    for o in g.objects[:g.nobjects] {
+        if base == o {
+            return true
+        }
+    }
+    return false
 }
 
 // Syncs the app's fds and names the plugin to blame, then re-raises with the default action.
@@ -430,7 +464,11 @@ put_object :: proc "contextless" (fd: posix.FD, n: int, base: uintptr) {
         }
         if !named {
             put(fd, "addr2line -e ")
-            put_c(fd, g_objs[i].path)
+            if path := plugin_path(base); path != "" {
+                put(fd, path)
+            } else {
+                put_c(fd, g_objs[i].path)
+            }
             named = true
         }
         put(fd, " 0x")
@@ -439,6 +477,22 @@ put_object :: proc "contextless" (fd: posix.FD, n: int, base: uintptr) {
     if named {
         put(fd, "\n")
     }
+}
+
+// A plugin is mapped from a memfd, so dladdr names a /proc/self/fd path closed long ago: this
+// is the file it was copied from. Wrong offsets if that file was rebuilt since the load.
+@(private = "file")
+plugin_path :: proc "contextless" (base: uintptr) -> string {
+    g := &g_guard
+    if !intrinsics.atomic_load(&g.armed) || g.app == nil {
+        return "" // no kernel to ask
+    }
+    for p in g.app.plugs {
+        if p.state == .Live && p.base == base {
+            return p.path
+        }
+    }
+    return ""
 }
 
 @(private = "file")

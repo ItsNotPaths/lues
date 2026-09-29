@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define LUES_API 2
+#define LUES_API 3
 
 #define LUES_EXPORT __attribute__((visibility("default")))
 
@@ -181,6 +181,13 @@ typedef struct lues_api {
      * and you are quarantined. */
     void (*fail)(const struct lues_api *api, lues_self self, const char *msg, size_t msg_len)
         __attribute__((noreturn));
+
+    /* LUES_API 3. For an object you dlopened yourself: `addr` is anything inside it, such as a
+     * function it exports. A fault there then unloads you, as one in your own .so does, instead
+     * of killing the process. Returns 0 when adopted. Refused for the kernel's object, libc and
+     * another plugin's .so. Adopt before the first call into it, and keep it open while you are
+     * loaded: the kernel keeps counting whatever is mapped at its base as yours. */
+    int32_t (*adopt)(const struct lues_api *api, lues_self self, const void *addr);
 } lues_api;
 
 _Static_assert(sizeof(lues_block) == 16, "lues_block");
@@ -193,7 +200,7 @@ _Static_assert(sizeof(lues_span) == 32, "lues_span");
 _Static_assert(sizeof(lues_span_pub) == 40, "lues_span_pub");
 _Static_assert(sizeof(lues_kind_vt) == 24, "lues_kind_vt");
 _Static_assert(sizeof(lues_kind_spec) == 64, "lues_kind_spec");
-_Static_assert(sizeof(lues_api) == 144, "lues_api");
+_Static_assert(sizeof(lues_api) == 152, "lues_api");
 
 /* Non-zero refuses the load and reverts what you registered. */
 #define LUES_MAIN LUES_EXPORT int32_t lues_main(const lues_api *api, lues_self self)
