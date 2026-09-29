@@ -9,9 +9,11 @@ import "core:sys/posix"
 import "core:time"
 
 // A fault or hang in plugin code unwinds back to dispatch, but only when the pc is inside that
-// plugin's .so or an object it adopted (guard 1) and no api call is in progress (guard 2). Anything else dies.
-// armed and busy are atomic so the optimiser cannot fold them; the guard is per thread
-// because the jump must land on the stack that faulted.
+// plugin's .so or an object it adopted (guard 1) and no api call is in progress (guard 2).
+// Anything else dies. Each dispatch pushes a frame, so a plugin's api call that dispatches to
+// another plugin nests, and the guards judge the plugin running at the top. depth and busy are
+// atomic so the optimiser cannot fold them; the guard is per thread because the jump must land
+// on the stack that faulted.
 
 foreign import libc_ "system:c"
 
@@ -45,8 +47,9 @@ FAULT_SIGNALS :: [?]posix.Signal{.SIGSEGV, .SIGBUS, .SIGILL, .SIGFPE}
 
 PLUG_HANG_MS :: 5000
 
+// One dispatch in progress.
 @(private = "file")
-Guard :: struct {
+Frame :: struct {
     env:      Jmp_Buf,
     ctx:      runtime.Context, // the arming frame's, so recovery can allocate
     app:      ^Kernel,
@@ -55,15 +58,25 @@ Guard :: struct {
     // The plugin's adopted objects, copied at arm time: the handler cannot follow its array.
     objects:  [FAULT_OBJECTS]uintptr,
     nobjects: int,
-    why:      string, // a literal, or fail's copy in `said`
     // The plugin's name plus a newline, copied at arm time: the handler cannot allocate.
     name:     [NAME_MAX]u8,
     n:        int,
-    said:     [SAID_MAX]u8,
-    traced:   bool,
-    armed:    bool, // atomic
+    left:     i64, // the frame below's watch time left, in ns; 0 for none
     busy:     bool, // atomic; inside an api call
 }
+
+@(private = "file")
+Guard :: struct {
+    frames: [FAULT_DEPTH]Frame,
+    depth:  int, // atomic; 0 is unarmed
+    why:    string, // a literal, or fail's copy in `said`
+    said:   [SAID_MAX]u8,
+    traced: bool,
+    lost:   [NAME_MAX]u8, // fail's name when no frame holds one
+}
+
+// Dispatches nested on one thread; past this, dispatch refuses.
+FAULT_DEPTH :: 16
 
 // Adopted objects per plugin; past this, adopt refuses.
 FAULT_OBJECTS :: 64
@@ -142,83 +155,116 @@ fault_kernel_object :: proc(base: uintptr) -> bool {
 
 // --- arming, and coming back ---
 
-fault_armed :: proc() -> bool {
-    return intrinsics.atomic_load(&g_guard.armed)
+// No frame left for another dispatch.
+fault_full :: proc() -> bool {
+    return intrinsics.atomic_load(&g_guard.depth) == FAULT_DEPTH
 }
 
+// The next frame's. Not while full.
 fault_env :: proc() -> ^Jmp_Buf {
-    return &g_guard.env
+    return &g_guard.frames[intrinsics.atomic_load(&g_guard.depth)].env
 }
 
-// Call after the sigsetjmp that fills the buffer.
+// Call after the sigsetjmp that fills the buffer. Pushes the frame.
 fault_arm :: proc(a: ^Kernel, i: int) {
     p := &a.plugs[i]
     g := &g_guard
-    g.ctx, g.app, g.who, g.base, g.why, g.traced = context, a, i, p.base, "", false
-    g.nobjects = copy(g.objects[:], p.objects[:])
-    name := p.name
-    g.n = min(len(name), NAME_MAX - 1)
-    copy(g.name[:g.n], name[:g.n])
-    g.name[g.n] = '\n'
-    g.n += 1
-    intrinsics.atomic_store(&g.busy, false)
-    intrinsics.atomic_store(&g.armed, true)
-    watch_arm()
+    d := intrinsics.atomic_load(&g.depth)
+    f := &g.frames[d]
+    f.ctx, f.app, f.who, f.base = context, a, i, p.base
+    f.nobjects = copy(f.objects[:], p.objects[:])
+    f.n = put_name(f.name[:], p.name)
+    intrinsics.atomic_store(&f.busy, false)
+    g.why, g.traced = "", false
+    watch_push(f)
+    intrinsics.atomic_store(&g.depth, d + 1)
 }
 
-// An object adopted during the call counts at once, not from the next dispatch.
+// An object adopted during the call counts at once, in every frame of the plugin, not from
+// the next dispatch.
 fault_adopt :: proc(i: int, base: uintptr) {
     g := &g_guard
-    if intrinsics.atomic_load(&g.armed) && g.who == i && g.nobjects < FAULT_OBJECTS {
-        g.objects[g.nobjects] = base
-        g.nobjects += 1
+    for &f in g.frames[:intrinsics.atomic_load(&g.depth)] {
+        if f.who == i && f.nobjects < FAULT_OBJECTS {
+            f.objects[f.nobjects] = base
+            f.nobjects += 1
+        }
     }
 }
 
+// Pops the frame.
 fault_disarm :: proc() {
-    intrinsics.atomic_store(&g_guard.armed, false)
-    watch_clear()
+    pop()
 }
 
 // Guard 2: a fault while busy is not unwound.
 // (hole pkey-tagging :tags (memory fault) :sev missing-system :needs (kernel-arenas)) kernel memory stays writable during plugin code; a stray plugin write corrupts it without a fault.
 fault_busy :: proc "contextless" (on: bool) {
-    intrinsics.atomic_store(&g_guard.busy, on)
+    if f := top(); f != nil {
+        intrinsics.atomic_store(&f.busy, on)
+    }
 }
 
 // The api's fail: the same jump as a fault, taken on purpose, so no guard 1. It can't jump
-// with no net armed on this thread, or from inside an api call (a nested dispatch): it dies
-// and `name` is quarantined. The message is the plugin's memory, so it is copied while busy.
+// with no net armed on this thread, or from inside an api call: it dies and the plugin is
+// quarantined, `name` when no frame names it. The message is the plugin's memory, so it is
+// copied while busy.
 fault_fail :: proc "contextless" (name, msg: string) -> ! {
     g := &g_guard
-    armed := intrinsics.atomic_load(&g.armed)
-    if !armed || intrinsics.atomic_load(&g.busy) {
-        if !armed {
-            g.n = min(len(name), NAME_MAX - 1)
-            copy(g.name[:g.n], name[:g.n])
-            g.name[g.n] = '\n'
-            g.n += 1
-        }
+    f := top()
+    if f == nil || intrinsics.atomic_load(&f.busy) {
         g.traced = trace_write(0, "failed")
-        die(.SIGABRT, blame = g.n > 1)
+        if f != nil {
+            die(.SIGABRT, f.name[:f.n])
+        } else {
+            die(.SIGABRT, g.lost[:put_name(g.lost[:], name)])
+        }
         abort()
     }
-    intrinsics.atomic_store(&g.busy, true)
+    intrinsics.atomic_store(&f.busy, true)
     n := copy(g.said[:], "failed")
     if len(msg) > 0 {
         n += copy(g.said[n:], ": ")
         n += copy(g.said[n:], msg)
     }
-    intrinsics.atomic_store(&g.busy, false)
+    intrinsics.atomic_store(&f.busy, false)
     why := string(g.said[:n])
     g.traced = trace_write(0, why)
     unwind(why)
 }
 
-// Reads only the guard: the jump does not restore the arming frame's locals.
+// Reads only the guard: the jump does not restore the arming frame's locals. The frame unwind
+// popped is still in its slot; copied out first, since unloading can dispatch into that slot.
 fault_reap :: proc "contextless" () {
-    context = g_guard.ctx
-    loader_faulted(g_guard.app, g_guard.who, g_guard.why, g_guard.traced)
+    g := &g_guard
+    f := &g.frames[intrinsics.atomic_load(&g.depth)]
+    context = f.ctx
+    loader_faulted(f.app, f.who, g.why, g.traced)
+}
+
+@(private = "file")
+top :: proc "contextless" () -> ^Frame {
+    d := intrinsics.atomic_load(&g_guard.depth)
+    return &g_guard.frames[d - 1] if d > 0 else nil
+}
+
+// Only after the jump buffer is done with: a signal from here on sees the frame below.
+@(private = "file")
+pop :: proc "contextless" () -> ^Frame {
+    d := intrinsics.atomic_load(&g_guard.depth) - 1
+    f := &g_guard.frames[d]
+    intrinsics.atomic_store(&g_guard.depth, d)
+    watch_pop(f)
+    return f
+}
+
+// The name plus a newline, cut to fit. Returns the length; 1 for no name.
+@(private = "file")
+put_name :: proc "contextless" (buf: []u8, name: string) -> int {
+    n := min(len(name), len(buf) - 1)
+    copy(buf[:n], name[:n])
+    buf[n] = '\n'
+    return n + 1
 }
 
 // --- the handlers ---
@@ -229,14 +275,15 @@ fault_reap :: proc "contextless" () {
 fault_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr) {
     pc := fault_ip(uc)
     g_guard.traced = trace_write(pc, signal_name(sig))
+    f := top()
     // Inside an api call the plugin's call caused it, wherever the pc is: quarantined, so the
     // next start does not load it into the same crash.
-    if intrinsics.atomic_load(&g_guard.armed) && intrinsics.atomic_load(&g_guard.busy) {
-        die(sig, blame = true)
+    if f != nil && intrinsics.atomic_load(&f.busy) {
+        die(sig, f.name[:f.n])
         return
     }
-    if !in_plugin(pc) {
-        die(sig, blame = false)
+    if !in_plugin(f, pc) {
+        die(sig, nil)
         return
     }
     unwind(signal_name(sig))
@@ -244,15 +291,16 @@ fault_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr
 
 @(private = "file")
 hang_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr) {
-    if !intrinsics.atomic_load(&g_guard.armed) {
+    f := top()
+    if f == nil {
         return // stale: the dispatch came back
     }
     if intrinsics.atomic_load(&g_watch_until) != 0 {
-        return // stale: a newer dispatch armed while the alarm was in flight
+        return // stale: a newer deadline was set while the alarm was in flight
     }
     g_guard.traced = trace_write(fault_ip(uc), "stopped returning")
-    if intrinsics.atomic_load(&g_guard.busy) {
-        die(.SIGABRT, blame = true)
+    if intrinsics.atomic_load(&f.busy) {
+        die(.SIGABRT, f.name[:f.n])
         return
     }
     unwind("stopped returning")
@@ -261,27 +309,25 @@ hang_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr)
 @(private = "file")
 unwind :: proc "contextless" (why: string) -> ! {
     g_guard.why = why
-    intrinsics.atomic_store(&g_guard.armed, false)
-    watch_clear()
-    siglongjmp(&g_guard.env, 1)
+    f := pop()
+    siglongjmp(&f.env, 1)
 }
 
 // Guard 1: who is to blame. Guard 2 decides whether it can be unwound.
 @(private = "file")
-in_plugin :: proc "contextless" (pc: uintptr) -> bool {
-    g := &g_guard
-    if !intrinsics.atomic_load(&g.armed) {
+in_plugin :: proc "contextless" (f: ^Frame, pc: uintptr) -> bool {
+    if f == nil {
         return false
     }
     info: Dl_Info
-    if pc == 0 || g.base == 0 || dladdr(rawptr(pc), &info) == 0 {
+    if pc == 0 || f.base == 0 || dladdr(rawptr(pc), &info) == 0 {
         return false
     }
     base := uintptr(info.dli_fbase)
-    if base == g.base {
+    if base == f.base {
         return true
     }
-    for o in g.objects[:g.nobjects] {
+    for o in f.objects[:f.nobjects] {
         if base == o {
             return true
         }
@@ -289,16 +335,17 @@ in_plugin :: proc "contextless" (pc: uintptr) -> bool {
     return false
 }
 
-// Syncs the app's fds and names the plugin to blame, then re-raises with the default action.
+// Syncs the app's fds and names the plugin to blame (`who`, newline included; nil for nobody),
+// then re-raises with the default action.
 @(private = "file")
-die :: proc "contextless" (sig: posix.Signal, blame: bool) {
+die :: proc "contextless" (sig: posix.Signal, who: []u8) {
     for &fd in g_syncs {
         if v := intrinsics.atomic_load(&fd); v != 0 {
             posix.fsync(posix.FD(v))
         }
     }
-    if report := intrinsics.atomic_load(&g_report); blame && report != 0 {
-        posix.write(posix.FD(report), &g_guard.name[0], uint(g_guard.n))
+    if report := intrinsics.atomic_load(&g_report); len(who) > 1 && report != 0 {
+        posix.write(posix.FD(report), raw_data(who), uint(len(who)))
     }
     posix.signal(sig, auto_cast posix.SIG_DFL)
     posix.kill(posix.getpid(), sig)
@@ -403,7 +450,8 @@ trace_write :: proc "contextless" (pc: uintptr, why: string) -> bool {
     n := walk(pc)
     put_header(fd, why)
     // The plugin's object first: the walk starts in kernel frames.
-    plug := g_guard.base if intrinsics.atomic_load(&g_guard.armed) else 0
+    f := top()
+    plug := f.base if f != nil else 0
     put_object(fd, n, plug)
     for i in 0 ..< n {
         if g_objs[i].base != 0 && g_objs[i].base != plug && !seen(i) {
@@ -441,8 +489,8 @@ walk :: proc "contextless" (pc: uintptr) -> int {
 @(private = "file")
 put_header :: proc "contextless" (fd: posix.FD, why: string) {
     put(fd, "\n--- ")
-    if intrinsics.atomic_load(&g_guard.armed) && g_guard.n > 1 {
-        posix.write(fd, &g_guard.name[0], uint(g_guard.n - 1))
+    if f := top(); f != nil && f.n > 1 {
+        posix.write(fd, &f.name[0], uint(f.n - 1))
     } else {
         put(fd, "kernel")
     }
@@ -483,11 +531,11 @@ put_object :: proc "contextless" (fd: posix.FD, n: int, base: uintptr) {
 // is the file it was copied from. Wrong offsets if that file was rebuilt since the load.
 @(private = "file")
 plugin_path :: proc "contextless" (base: uintptr) -> string {
-    g := &g_guard
-    if !intrinsics.atomic_load(&g.armed) || g.app == nil {
+    f := top()
+    if f == nil || f.app == nil {
         return "" // no kernel to ask
     }
-    for p in g.app.plugs {
+    for p in f.app.plugs {
         if p.state == .Live && p.base == base {
             return p.path
         }
@@ -655,11 +703,27 @@ watchdog :: proc "c" (arg: rawptr) -> rawptr {
     }
 }
 
+// A new deadline for f; the one below pauses, so a nested call's time is not charged to it.
 @(private = "file")
-watch_arm :: proc() {
-    if watching() {
-        intrinsics.atomic_store(&g_watch_until, time.tick_now()._nsec + g_watch_ms * 1e6)
+watch_push :: proc "contextless" (f: ^Frame) {
+    f.left = 0
+    if !watching() {
+        return
     }
+    now := time.tick_now()._nsec
+    if until := intrinsics.atomic_load(&g_watch_until); until != 0 {
+        f.left = max(until - now, 1)
+    }
+    intrinsics.atomic_store(&g_watch_until, now + g_watch_ms * 1e6)
+}
+
+// The frame below gets the time it had left.
+@(private = "file")
+watch_pop :: proc "contextless" (f: ^Frame) {
+    if !watching() {
+        return
+    }
+    intrinsics.atomic_store(&g_watch_until, time.tick_now()._nsec + f.left if f.left != 0 else 0)
 }
 
 @(private = "file")

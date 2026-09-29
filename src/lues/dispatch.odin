@@ -1,5 +1,6 @@
 package lues
 
+import "core:fmt"
 import "../docs"
 
 // Every plugin call goes through dispatch. A fault there is `ok = false` with the plugin unloaded.
@@ -11,7 +12,7 @@ Ret :: struct {
 
 App_Fn :: #type proc(api: ^Api, self: Self, data: rawptr) -> i32
 
-// (hole rs-dispatch-trampoline :tags (port fault) :sev missing-port :needs (nested-dispatch-blame)) Rust cannot hold a sigsetjmp frame; dispatch needs a C or asm trampoline for the jump back.
+// (hole rs-dispatch-trampoline :tags (port fault) :sev missing-port) Rust cannot hold a sigsetjmp frame; dispatch needs a C or asm trampoline for the jump back.
 // Data, so the sigsetjmp sits in the frame that makes the call.
 Call :: struct {
     what:  enum {
@@ -36,16 +37,23 @@ Call :: struct {
     arg:   rawptr, // for .App
 }
 
-// A nested dispatch runs unguarded; the outer net blames the outer plugin.
+// A dispatch from inside an api call nests: its own frame on the fault guard, so a fault is
+// blamed on the plugin that was running, and the call that nested it goes on. When a nested
+// fault unloads a plugin that is also further down the stack, its outer calls come back
+// `ok = false`, so nothing it returns is kept.
 dispatch :: proc(k: ^Kernel, i: int, c: Call) -> (r: Ret, ok: bool) {
     if c.what != .App {
         k.ran += 1
     }
-    // (hole nested-dispatch-blame :tags (fault compose) :sev wrong-behavior) one guard per thread: a fault in a nested call blames and unloads the outer plugin.
-    if !fault_ready() || fault_armed() {
+    if !fault_ready() {
         r = run(k, i, c)
         return r, intact(k, i)
     }
+    if fault_full() {
+        say(k, fmt.tprintf("%s: calls nested more than %d deep", k.plugs[i].name, FAULT_DEPTH))
+        return {}, false
+    }
+    gen := k.plugs[i].gen
     if sigsetjmp(fault_env(), 1) != 0 {
         fault_reap() // locals of this frame are not restored
         return {}, false
@@ -53,7 +61,7 @@ dispatch :: proc(k: ^Kernel, i: int, c: Call) -> (r: Ret, ok: bool) {
     fault_arm(k, i)
     r = run(k, i, c)
     fault_disarm()
-    return r, intact(k, i)
+    return r, intact(k, i) && k.plugs[i].state == .Live && k.plugs[i].gen == gen
 }
 
 @(private = "file")

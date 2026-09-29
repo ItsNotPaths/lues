@@ -37,8 +37,8 @@ api_init :: proc(k: ^Kernel) {
         io_close         = api_io_close,
         fail             = api_fail,
         adopt            = api_adopt,
-        // (hole plugin-calls :tags (compose abi) :sev missing-system :needs (nested-dispatch-blame)) no call arm: a plugin cannot run another plugin's command.
-        // (hole plugin-hooks :tags (compose abi) :sev missing-system :needs (nested-dispatch-blame)) no hook arms: a plugin cannot declare a hook point for others to join.
+        // (hole plugin-calls :tags (compose abi) :sev missing-system) no call arm: a plugin cannot run another plugin's command.
+        // (hole plugin-hooks :tags (compose abi) :sev missing-system) no hook arms: a plugin cannot declare a hook point for others to join.
         // (hole doc-vars :tags (compose abi) :sev missing-system) no per-document variables: plugins cannot share named state.
     }
 }

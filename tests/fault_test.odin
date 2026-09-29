@@ -123,6 +123,7 @@ trace_test :: proc(t: ^testing.T) {
 // The watchdog ends a call that stops returning, the same way as a fault.
 @(test)
 hang_test :: proc(t: ^testing.T) {
+    sync.guard(&watch_lock)
     said := strings.builder_make(context.temp_allocator)
     k: lues.Kernel
     box: Api_Box

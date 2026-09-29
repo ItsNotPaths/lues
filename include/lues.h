@@ -177,8 +177,7 @@ typedef struct lues_api {
 
     /* LUES_API 2. Unloads you the way a fault does: the call in progress is abandoned and
      * dispatch gets it back. Call it from the plugin's own thread. With no net to catch it
-     * (none installed, another thread, or inside a call from the kernel), the process dies
-     * and you are quarantined. */
+     * (none installed, or another thread), the process dies and you are quarantined. */
     void (*fail)(const struct lues_api *api, lues_self self, const char *msg, size_t msg_len)
         __attribute__((noreturn));
 

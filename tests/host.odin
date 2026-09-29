@@ -146,6 +146,9 @@ run :: proc(k: ^lues.Kernel, name: string, focused: Maybe(docs.Id) = nil, args :
 // The faults and quarantine fds are per process: a test that sets home.state holds this.
 state_lock: sync.Mutex
 
+// The watchdog watches one thread: a test that starts it holds this.
+watch_lock: sync.Mutex
+
 @(test)
 quarantine_test :: proc(t: ^testing.T) {
     sync.guard(&state_lock)
