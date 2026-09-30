@@ -44,7 +44,6 @@ api_init :: proc(k: ^Kernel) {
     }
 }
 
-// (hole rs-extern-panic :tags (port abi) :sev missing-port :needs (rs-plugin-abi)) Rust api arms would need every extern "C" fn to stop its own panics before they reach plugin frames.
 // Refuses a Self from an earlier load. Opens fault guard 2 until api_done.
 api_kernel :: proc "c" (api: ^Api, self: Self) -> (k: ^Kernel, i: int, ok: bool) {
     if api == nil {

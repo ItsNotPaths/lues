@@ -4,7 +4,6 @@ import "base:runtime"
 import "core:slice"
 import "../pt"
 
-// (hole rs-docs :tags (port) :sev missing-port :needs (rs-pt)) not yet a crate; documents, spans and the store are Odin only.
 // Writes queue and store_drain applies them, so gen moves at one place.
 
 Id :: struct {

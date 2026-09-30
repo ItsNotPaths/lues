@@ -101,7 +101,6 @@ g_installed: bool
 
 // --- install ---
 
-// (hole rs-fault-handlers :tags (port fault) :sev missing-port :needs (rs-dispatch-trampoline pkey-tagging)) not ported; a Rust host must also install after std and take over its stack-overflow SIGSEGV handler.
 // Handlers are per process, the alt stack per thread, so a second caller only adds its stack.
 fault_install :: proc() -> bool {
     // Keep an existing alt stack: ASan unmaps its own at thread exit.

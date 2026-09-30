@@ -2,7 +2,6 @@ package conf
 
 import "core:strings"
 
-// (hole rs-conf :tags (port) :sev missing-port) not yet a crate; the conf reader is Odin only.
 // `key = value` under `[section]` headers. Rows point into `text`: keep it alive with them.
 
 Row :: struct {

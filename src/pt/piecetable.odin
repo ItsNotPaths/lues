@@ -4,7 +4,6 @@ import "base:runtime"
 import "core:slice"
 import "../rc"
 
-// (hole rs-pt :tags (port) :sev missing-port :needs (rs-arenas)) not yet a crate; the piece table and its arena are Odin only.
 // Pieces over immutable blocks. Nothing written is copied or moved.
 // Invariants: pieces in order, none empty, doc_off the running total; line 0 starts at 0 and
 // the index is never empty; size is the sum of piece lengths.

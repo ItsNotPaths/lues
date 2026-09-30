@@ -3,7 +3,7 @@ package lues
 import "core:c"
 import "../docs"
 
-// (hole rs-plugin-abi :tags (port abi) :sev missing-port :needs (plugin-calls plugin-hooks advice doc-vars plugin-arenas)) lues.h is hand-kept against this file; no repr(C) Rust mirror for cbindgen to generate it from.
+// (hole abi-codegen :tags (abi) :sev missing-system) lues.h and rustplug's sys module are kept in step with this file by hand; nothing generates them or checks they agree.
 // include/lues.h mirrors this.
 
 API :: 3 // 2: fail. 3: adopt

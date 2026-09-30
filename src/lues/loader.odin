@@ -57,7 +57,6 @@ ledger_add :: proc(k: ^Kernel, i: int, tag: u32, idx: int) {
     append(&k.plugs[i].ledger, Record{what = .App, idx = idx, tag = tag})
 }
 
-// (hole rs-loader :tags (port loader) :sev missing-port :needs (rs-plugin-abi rs-fault-handlers)) the loader, ledger and quarantine are Odin only.
 loader_load :: proc(k: ^Kernel, path: string) -> bool {
     context = k.ctx
     name := strings.trim_suffix(filepath.base(path), ".so")

@@ -14,7 +14,6 @@ import "core:thread"
 import "core:time"
 import "../wake"
 
-// (hole rs-work :tags (port) :sev missing-port :needs (rs-arenas)) not yet a crate; the io worker and wake hook are Odin only.
 // One worker thread polls children's pipes, one inotify fd and caller fds; results cross at
 // pool_drain.
 // Only the worker closes an fd: one closed under its poll could be reused by a spawn.
