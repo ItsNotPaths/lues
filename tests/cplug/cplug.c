@@ -4,6 +4,7 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
 #include <string.h>
@@ -18,6 +19,21 @@ static int32_t boom(const lues_api *api, lues_self self, const lues_at *at, cons
                     size_t args_len) {
     (void)api, (void)self, (void)at, (void)args, (void)args_len;
     *NOWHERE = 1;
+    return 0;
+}
+
+/* Faults in a qsort comparator: libc's frames sit between the fault and dispatch. */
+static int boom_cmp(const void *a, const void *b) {
+    (void)a, (void)b;
+    *NOWHERE = 1;
+    return 0;
+}
+
+static int32_t sortboom(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                        size_t args_len) {
+    int two[2] = {2, 1};
+    (void)api, (void)self, (void)at, (void)args, (void)args_len;
+    qsort(two, 2, sizeof two[0], boom_cmp);
     return 0;
 }
 
@@ -388,6 +404,7 @@ LUES_MAIN {
     api->register_command(api, self, LIT("size"), LIT("say the focused doc's size"), size);
     api->register_command(api, self, LIT("boom"), LIT("dereference null"), boom);
     api->register_command(api, self, LIT("hang"), LIT("stop returning"), hang);
+    api->register_command(api, self, LIT("sortboom"), LIT("fault under qsort"), sortboom);
     api->register_command(api, self, LIT("fail"), LIT("fail with the args"), fail);
     api->register_command(api, self, LIT("failoff"), LIT("fail from another thread"), failoff);
     api->register_command(api, self, LIT("badsubmit"), LIT("fault the kernel in submit"), badsubmit);

@@ -91,6 +91,13 @@ unadopted_test :: proc(t: ^testing.T) {
     crash(t, "unadopted", "scan", .SIGSEGV, blamed = false)
 }
 
+// A fault in the plugin's code with libc's frames under it is not unwound: libc may hold a lock
+// there. The process dies and the plugin is quarantined.
+@(test)
+foreign_test :: proc(t: ^testing.T) {
+    crash(t, "foreign", "sortboom", .SIGSEGV)
+}
+
 // The trace's first line is the plugin's own object, with an offset.
 @(test)
 trace_test :: proc(t: ^testing.T) {

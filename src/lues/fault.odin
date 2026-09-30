@@ -43,6 +43,7 @@ Dl_Info :: struct {
     dli_saddr: rawptr,
 }
 
+// (hole abort-catch :tags fault :sev missing-system :needs foreign-frames) no SIGABRT: a C assert or C++ std::terminate in a plugin kills the process.
 FAULT_SIGNALS :: [?]posix.Signal{.SIGSEGV, .SIGBUS, .SIGILL, .SIGFPE}
 
 PLUG_HANG_MS :: 5000
@@ -55,6 +56,7 @@ Frame :: struct {
     app:      ^Kernel,
     who:      int,
     base:     uintptr,
+    via:      rawptr, // .App's trampoline: the app's frame sits under the plugin's
     // The plugin's adopted objects, copied at arm time: the handler cannot follow its array.
     objects:  [FAULT_OBJECTS]uintptr,
     nobjects: int,
@@ -99,9 +101,13 @@ g_alt: [64 * 1024]u8
 @(private = "file")
 g_installed: bool
 
+@(private = "file")
+g_kernel: uintptr // this object's base: the walk stops at the dispatch frame
+
 // --- install ---
 
 // Handlers are per process, the alt stack per thread, so a second caller only adds its stack.
+// (hole net-kept :tags fault :sev wrong-behavior) nothing notices a plugin's sigaction over these handlers; its next fault kills the process unblamed.
 fault_install :: proc() -> bool {
     // Keep an existing alt stack: ASan unmaps its own at thread exit.
     old: posix.stack_t
@@ -129,6 +135,7 @@ fault_install :: proc() -> bool {
     // The first backtrace dlopens the unwinder and mallocs; do it here, not in the handler.
     warm: [1]rawptr
     backtrace(raw_data(warm[:]), 1)
+    g_kernel = fault_object_base(rawptr(fault_install))
     g_installed = true
     return true
 }
@@ -165,12 +172,12 @@ fault_env :: proc() -> ^Jmp_Buf {
 }
 
 // Call after the sigsetjmp that fills the buffer. Pushes the frame.
-fault_arm :: proc(a: ^Kernel, i: int) {
+fault_arm :: proc(a: ^Kernel, i: int, via: rawptr = nil) {
     p := &a.plugs[i]
     g := &g_guard
     d := intrinsics.atomic_load(&g.depth)
     f := &g.frames[d]
-    f.ctx, f.app, f.who, f.base = context, a, i, p.base
+    f.ctx, f.app, f.who, f.base, f.via = context, a, i, p.base, via
     f.nobjects = copy(f.objects[:], p.objects[:])
     f.n = put_name(f.name[:], p.name)
     intrinsics.atomic_store(&f.busy, false)
@@ -211,8 +218,9 @@ fault_busy :: proc "contextless" (on: bool) {
 fault_fail :: proc "contextless" (name, msg: string) -> ! {
     g := &g_guard
     f := top()
-    if f == nil || intrinsics.atomic_load(&f.busy) {
-        g.traced = trace_write(0, "failed")
+    n, _ := walk(0)
+    if f == nil || intrinsics.atomic_load(&f.busy) || !owned(f, n, caller(n)) {
+        g.traced = trace_write(n, "failed")
         if f != nil {
             die(.SIGABRT, f.name[:f.n])
         } else {
@@ -221,14 +229,14 @@ fault_fail :: proc "contextless" (name, msg: string) -> ! {
         abort()
     }
     intrinsics.atomic_store(&f.busy, true)
-    n := copy(g.said[:], "failed")
+    m := copy(g.said[:], "failed")
     if len(msg) > 0 {
-        n += copy(g.said[n:], ": ")
-        n += copy(g.said[n:], msg)
+        m += copy(g.said[m:], ": ")
+        m += copy(g.said[m:], msg)
     }
     intrinsics.atomic_store(&f.busy, false)
-    why := string(g.said[:n])
-    g.traced = trace_write(0, why)
+    why := string(g.said[:m])
+    g.traced = trace_write(n, why)
     unwind(why)
 }
 
@@ -273,7 +281,8 @@ put_name :: proc "contextless" (buf: []u8, name: string) -> int {
 @(private = "file")
 fault_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr) {
     pc := fault_ip(uc)
-    g_guard.traced = trace_write(pc, signal_name(sig))
+    n, at := walk(pc)
+    g_guard.traced = trace_write(n, signal_name(sig))
     f := top()
     // Inside an api call the plugin's call caused it, wherever the pc is: quarantined, so the
     // next start does not load it into the same crash.
@@ -281,13 +290,21 @@ fault_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr
         die(sig, f.name[:f.n])
         return
     }
+    // (hole leaf-libc-faults :tags fault :sev missing-system :needs foreign-frames) a fault in memcpy, strlen or another lock-free libc leaf the plugin called kills the process.
+    // (hole plugin-threads :tags fault :sev missing-system) a thread a plugin started has no frame, so a fault on it dies unblamed.
     if !in_plugin(f, pc) {
         die(sig, nil)
+        return
+    }
+    // Its fault, under code that is not its own, which may hold a lock the jump would leave held.
+    if !owned(f, n, at) {
+        die(sig, f.name[:f.n])
         return
     }
     unwind(signal_name(sig))
 }
 
+// (hole foreign-frames :tags fault :sev wrong-behavior) a hang is unwound wherever the pc is; landing inside malloc leaves its arena lock held, and the next malloc deadlocks.
 @(private = "file")
 hang_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr) {
     f := top()
@@ -297,7 +314,8 @@ hang_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr)
     if intrinsics.atomic_load(&g_watch_until) != 0 {
         return // stale: a newer deadline was set while the alarm was in flight
     }
-    g_guard.traced = trace_write(fault_ip(uc), "stopped returning")
+    n, _ := walk(fault_ip(uc))
+    g_guard.traced = trace_write(n, "stopped returning")
     if intrinsics.atomic_load(&f.busy) {
         die(.SIGABRT, f.name[:f.n])
         return
@@ -315,14 +333,50 @@ unwind :: proc "contextless" (why: string) -> ! {
 // Guard 1: who is to blame. Guard 2 decides whether it can be unwound.
 @(private = "file")
 in_plugin :: proc "contextless" (f: ^Frame, pc: uintptr) -> bool {
-    if f == nil {
-        return false
-    }
     info: Dl_Info
-    if pc == 0 || f.base == 0 || dladdr(rawptr(pc), &info) == 0 {
+    if f == nil || pc == 0 || f.base == 0 || dladdr(rawptr(pc), &info) == 0 {
         return false
     }
-    base := uintptr(info.dli_fbase)
+    return mine(f, uintptr(info.dli_fbase))
+}
+
+// Guard 1 for the rest of the stack: every frame under `at`, down to the dispatch frame, is
+// the plugin's. A walk that missed the pc (at < 0), or ends first, judges only what it saw.
+@(private = "file")
+owned :: proc "contextless" (f: ^Frame, n, at: int) -> bool {
+    if at < 0 {
+        return true
+    }
+    via: uintptr
+    if info: Dl_Info; f.via != nil && dladdr(f.via, &info) != 0 {
+        via = uintptr(info.dli_fbase)
+    }
+    for o in g_objs[at + 1:n] {
+        if o.base == g_kernel || (via != 0 && o.base == via) {
+            return true
+        }
+        if !mine(f, o.base) {
+            return false
+        }
+    }
+    return true
+}
+
+// The frame under the walk's own kernel frames: whoever called into the api.
+@(private = "file")
+caller :: proc "contextless" (n: int) -> int {
+    at := 0
+    for at < n && g_objs[at].base == g_kernel {
+        at += 1
+    }
+    return at - 1
+}
+
+@(private = "file")
+mine :: proc "contextless" (f: ^Frame, base: uintptr) -> bool {
+    if base == 0 {
+        return false
+    }
     if base == f.base {
         return true
     }
@@ -443,13 +497,13 @@ fault_trace_path :: proc(a: ^Kernel) -> string {
     return path
 }
 
+// Writes the last walk.
 @(private = "file")
-trace_write :: proc "contextless" (pc: uintptr, why: string) -> bool {
+trace_write :: proc "contextless" (n: int, why: string) -> bool {
     fd := posix.FD(intrinsics.atomic_load(&g_trace))
     if fd == 0 {
         return false
     }
-    n := walk(pc)
     put_header(fd, why)
     // The plugin's object first: the walk starts in kernel frames.
     f := top()
@@ -465,14 +519,18 @@ trace_write :: proc "contextless" (pc: uintptr, why: string) -> bool {
 }
 
 // A plugin without unwind tables stops the walk short, so the pc is added when it was missed.
+// `at` is the pc's frame; -1 when the walk missed it.
 @(private = "file")
-walk :: proc "contextless" (pc: uintptr) -> int {
-    n := int(backtrace(raw_data(g_pcs[:]), TRACE_MAX))
-    walked := false
+walk :: proc "contextless" (pc: uintptr) -> (n, at: int) {
+    n = int(backtrace(raw_data(g_pcs[:]), TRACE_MAX))
+    at = -1
     for i in 0 ..< n {
-        walked ||= uintptr(g_pcs[i]) == pc
+        if pc != 0 && uintptr(g_pcs[i]) == pc {
+            at = i
+            break
+        }
     }
-    if !walked && pc != 0 && n < TRACE_MAX {
+    if at < 0 && pc != 0 && n < TRACE_MAX {
         copy(g_pcs[1:], g_pcs[:n]) // overlapping; copy is a memmove
         g_pcs[0] = rawptr(pc)
         n += 1
@@ -484,7 +542,7 @@ walk :: proc "contextless" (pc: uintptr) -> int {
             g_objs[i] = {uintptr(info.dli_fbase), info.dli_fname}
         }
     }
-    return n
+    return
 }
 
 // Drops the newline fault_arm put after the name.
