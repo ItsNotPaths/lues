@@ -30,6 +30,7 @@ Plugin :: struct {
 }
 
 // Faulted keeps the library mapped: dlclose would run more of the code that died.
+// (hole faulted-fini :tags loader :sev wrong-behavior) still mapped, so glibc runs its destructors at exit; no frame is armed then, so a crash there is not blamed on it.
 Plug_State :: enum u8 {
     Unloaded,
     Live,
@@ -314,6 +315,7 @@ unload :: proc(k: ^Kernel, i: int) {
         }
     }
     clear(&p.ledger)
+    // (hole thread-reap :tags (fault loader) :sev missing-system :needs (plugin-threads foreign-frames)) threads a plugin started outlive it: they run on after a fault and crash after dlclose.
     // (hole plugin-arenas :tags (memory abi) :sev missing-system) no arena per plugin; what a faulted plugin allocated leaks.
     if p.state == .Live {
         dynlib.unload_library(p.lib)
