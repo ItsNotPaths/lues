@@ -6,10 +6,10 @@ A document is bytes in a piece table that lues owns. A change is a byte splice, 
 against a generation. Plugins read documents in place, through snapshots. The application
 decides what the bytes mean and how to draw them.
 
-The name: cordis is heart, and lues is heart disease. Composition is modeled on
-[Cordis](https://github.com/cordiverse/cordis), over a dataspace where everything is bytes.
+cordis is heart, and lues is the heartworm. Composition is modeled on
+[Cordis](https://github.com/cordiverse/cordis), over a unix "dataspace", all bytes.
 
-## What lues owns
+## lues does:
 
 - Documents: the piece table, splices, undo, the change log, spans and snapshots.
 - The loader and a ledger per plugin. Unload reverts the ledger in reverse order.
@@ -38,7 +38,7 @@ with the same name defines the doc-var again.
 
 ## Faults
 
-The threat model is buggy plugins, not hostile ones.
+The threat model is buggy plugins, not neccesarily hostile ones.
 
 - A fault or a `fail` in plugin code unloads that plugin, and the process continues. If the
   application starts the watchdog, a hang does the same.
