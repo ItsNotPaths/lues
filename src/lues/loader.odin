@@ -35,7 +35,6 @@ Plugin :: struct {
 Chain :: [len(FAULT_SIGNALS)]posix.sigaction_t
 
 // Faulted keeps the library mapped: dlclose would run more of the code that died.
-// (hole faulted-fini :tags loader :sev wrong-behavior) still mapped, so glibc runs its destructors at exit; no frame is armed then, so a crash there is not blamed on it.
 Plug_State :: enum u8 {
     Unloaded,
     Live,
@@ -339,6 +338,9 @@ unload :: proc(k: ^Kernel, i: int) {
     if p.state == .Live && !stopped {
         p.state = .Faulted
         say(k, fmt.tprintf("%s: a thread of its own did not stop, so it stays mapped", p.name))
+    }
+    if p.state == .Faulted {
+        fault_dead(p.base, p.name, p.path)
     }
     if p.state == .Live {
         dynlib.unload_library(p.lib)

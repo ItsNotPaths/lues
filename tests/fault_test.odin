@@ -1,5 +1,6 @@
 package tests
 
+import "core:c/libc"
 import "core:dynlib"
 import "core:fmt"
 import "core:os"
@@ -403,10 +404,18 @@ thread_test :: proc(t: ^testing.T) {
     testing.expect(t, run(&k, "hello"))
 }
 
+// A faulted plugin stays mapped, so glibc runs its destructors at exit, after the kernel is gone.
+// A crash there is blamed on it.
+@(test)
+exit_test :: proc(t: ^testing.T) {
+    crash(t, "exit", "dtorboom", .SIGSEGV, exit = true)
+}
+
 // Runs `cmd` in a child, this test binary again with only crash_child selected, and expects it
-// to die of `sig`, with cplug quarantined when `blamed`.
+// to die of `sig`, with cplug quarantined when `blamed`. With `exit`, the child destroys its
+// kernel and exits after the command.
 @(private = "file")
-crash :: proc(t: ^testing.T, name, cmd: string, sig: posix.Signal, blamed := true) {
+crash :: proc(t: ^testing.T, name, cmd: string, sig: posix.Signal, blamed := true, exit := false) {
     sync.guard(&state_lock)
     data, staged := stage(t, name, "cplug", "grammar")
     if !staged {
@@ -414,7 +423,11 @@ crash :: proc(t: ^testing.T, name, cmd: string, sig: posix.Signal, blamed := tru
     }
     state, _, errs, err := os.process_exec({
         command = {"/proc/self/exe", "-tests:crash_child"}, // args[0] may not be a path
-        env     = {fmt.tprintf("%s=%s", CRASH_ENV, data), fmt.tprintf("%s=%s", CRASH_CMD_ENV, cmd)},
+        env     = {
+            fmt.tprintf("%s=%s", CRASH_ENV, data),
+            fmt.tprintf("%s=%s", CRASH_CMD_ENV, cmd),
+            fmt.tprintf("%s=%s", CRASH_EXIT_ENV, "1" if exit else ""),
+        },
     }, context.temp_allocator)
     testing.expectf(t, err == nil && !state.success && state.exit_code == int(sig),
                     "the child did not die of %v: %v %v %s", sig, err, state, errs)
@@ -428,6 +441,9 @@ CRASH_ENV :: "LUES_CRASH_CHILD"
 
 @(private = "file")
 CRASH_CMD_ENV :: "LUES_CRASH_CMD"
+
+@(private = "file")
+CRASH_EXIT_ENV :: "LUES_CRASH_EXIT"
 
 // A no-op unless crash runs it.
 @(test)
@@ -446,5 +462,9 @@ crash_child :: proc(t: ^testing.T) {
     id := docs.store_open(&k.store)
     // Every command gets the grammar's path; only scan reads it.
     run(&k, os.get_env(CRASH_CMD_ENV, context.temp_allocator), id, lues.loader_path(&k, "grammar"))
+    if os.get_env(CRASH_EXIT_ENV, context.temp_allocator) != "" {
+        lues.kernel_destroy(&k)
+        libc.exit(0) // libc's: it runs the destructors
+    }
     testing.fail_now(t, "the process survived")
 }

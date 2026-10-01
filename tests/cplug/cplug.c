@@ -209,6 +209,24 @@ static int32_t churn(const lues_api *api, lues_self self, const lues_at *at, con
     return 0;
 }
 
+/* `dtorboom` arms a destructor that faults, then faults itself: the image stays mapped, and
+ * glibc runs the destructor at exit. */
+static int DTOR_BOOM;
+
+__attribute__((destructor)) static void at_exit_boom(void) {
+    if (DTOR_BOOM) {
+        *NOWHERE = 1;
+    }
+}
+
+static int32_t dtorboom(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                        size_t args_len) {
+    (void)api, (void)self, (void)at, (void)args, (void)args_len;
+    DTOR_BOOM = 1;
+    *NOWHERE = 1;
+    return 0;
+}
+
 /* A garbage edits pointer: the kernel faults reading it, inside the api call. */
 static int32_t badsubmit(const lues_api *api, lues_self self, const lues_at *at,
                          const char *args, size_t args_len) {
@@ -619,6 +637,7 @@ LUES_MAIN {
     api->register_command(api, self, LIT("assert"), LIT("fail a C assert"), assert_cmd);
     api->register_command(api, self, LIT("sortabort"), LIT("abort under qsort"), sortabort);
     api->register_command(api, self, LIT("gabort"), LIT("abort in the grammar"), gabort);
+    api->register_command(api, self, LIT("dtorboom"), LIT("fault, and again at exit"), dtorboom);
     api->register_command(api, self, LIT("threadboom"), LIT("fault on a thread"), threadboom);
     api->register_command(api, self, LIT("thread"), LIT("start a thread that runs on"), thread_cmd);
     api->register_command(api, self, LIT("catch"), LIT("catch a grammar fault itself"), catch_cmd);

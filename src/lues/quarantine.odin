@@ -36,7 +36,7 @@ quarantine_open :: proc(a: ^Kernel) {
 quarantine_destroy :: proc(a: ^Kernel) {
     context = a.ctx
     if a.report != nil {
-        fault_report_fd(0)
+        fault_report_drop()
         os.close(a.report)
         a.report = nil
     }

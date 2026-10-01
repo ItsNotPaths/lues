@@ -510,6 +510,12 @@ fault_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr
     pc := fault_ip(uc)
     n, at := walk(pc)
     f := top()
+    if f == nil {
+        g_exit = dead_in(n)
+        g_guard.traced = trace_write(n, signal_name(sig))
+        die(sig, g_exit.name[:g_exit.n] if g_exit != nil else nil)
+        return
+    }
     // Inside an api call the plugin's call caused it, wherever the pc is: quarantined, so the
     // next start does not load it into the same crash.
     if f != nil && intrinsics.atomic_load(&f.busy) {
@@ -802,6 +808,78 @@ fault_report_fd :: proc(fd: uintptr) {
     intrinsics.atomic_store(&g_report, i32(fd))
 }
 
+// Before the kernel closes the quarantine or faults file: a dead plugin's destructors still run
+// at exit, so the handler keeps its own copy of the fd while one is mapped.
+fault_fd_drop :: proc(slot: ^i32) {
+    fd := intrinsics.atomic_load(slot)
+    if fd != 0 && intrinsics.atomic_load(&g_ndead) > 0 {
+        fd = posix.fcntl(posix.FD(fd), .DUPFD_CLOEXEC, c.int(0))
+    } else {
+        fd = 0
+    }
+    intrinsics.atomic_store(slot, max(fd, 0))
+}
+
+fault_report_drop :: proc() {
+    fault_fd_drop(&g_report)
+}
+
+// --- dead plugins ---
+//
+// A faulted plugin stays mapped, and glibc runs its destructors and atexit handlers at exit,
+// with no frame armed. A crash there is blamed by the frames it is in. The table outlives the
+// kernel.
+
+@(private = "file")
+DEAD_MAX :: 64
+
+@(private = "file")
+PATH_MAX :: 256
+
+@(private = "file")
+Dead :: struct {
+    base: uintptr,
+    name: [NAME_MAX]u8, // with a newline, as a frame's
+    n:    int,
+    path: [PATH_MAX]u8,
+    plen: int,
+}
+
+@(private = "file")
+g_dead: [DEAD_MAX]Dead
+
+@(private = "file")
+g_ndead: int // atomic
+
+// The dead plugin a crash with no frame is in, for the trace; nil for none.
+@(private = "file", thread_local)
+g_exit: ^Dead
+
+// The main thread only. Past DEAD_MAX, a crash at exit is not blamed.
+fault_dead :: proc(base: uintptr, name, path: string) {
+    n := intrinsics.atomic_load(&g_ndead)
+    if base == 0 || n == DEAD_MAX {
+        return
+    }
+    d := &g_dead[n]
+    d.base = base
+    d.n = put_name(d.name[:], name)
+    d.plen = copy(d.path[:], path)
+    intrinsics.atomic_store(&g_ndead, n + 1)
+}
+
+@(private = "file")
+dead_in :: proc "contextless" (n: int) -> ^Dead {
+    for o in g_objs[:n] {
+        for &d in g_dead[:intrinsics.atomic_load(&g_ndead)] {
+            if o.base == d.base {
+                return &d
+            }
+        }
+    }
+    return nil
+}
+
 // --- the trace ---
 //
 // The handler walks the stack before it unwinds and writes one `addr2line` line per object,
@@ -846,7 +924,7 @@ fault_trace_close :: proc(a: ^Kernel) {
     if a.traces == nil {
         return
     }
-    intrinsics.atomic_store(&g_trace, 0)
+    fault_fd_drop(&g_trace)
     os.close(a.traces)
     a.traces = nil
 }
@@ -870,8 +948,12 @@ trace_write :: proc "contextless" (n: int, why: string) -> bool {
     }
     put_header(fd, why)
     // The plugin's object first: the walk starts in kernel frames.
-    f := top()
-    plug := f.base if f != nil else 0
+    plug: uintptr
+    if f := top(); f != nil {
+        plug = f.base
+    } else if g_exit != nil {
+        plug = g_exit.base
+    }
     put_object(fd, n, plug)
     for i in 0 ..< n {
         if g_objs[i].base != 0 && g_objs[i].base != plug && !seen(i) {
@@ -915,6 +997,8 @@ put_header :: proc "contextless" (fd: posix.FD, why: string) {
     put(fd, "\n--- ")
     if f := top(); f != nil && f.n > 1 {
         posix.write(fd, &f.name[0], uint(f.n - 1))
+    } else if g_exit != nil && g_exit.n > 1 {
+        posix.write(fd, &g_exit.name[0], uint(g_exit.n - 1))
     } else {
         put(fd, "kernel")
     }
@@ -955,6 +1039,9 @@ put_object :: proc "contextless" (fd: posix.FD, n: int, base: uintptr) {
 // is the file it was copied from. Wrong offsets if that file was rebuilt since the load.
 @(private = "file")
 plugin_path :: proc "contextless" (base: uintptr) -> string {
+    if g_exit != nil && g_exit.base == base {
+        return string(g_exit.path[:g_exit.plen])
+    }
     f := top()
     if f == nil || f.app == nil {
         return "" // no kernel to ask
