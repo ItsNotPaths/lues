@@ -95,6 +95,7 @@ mod sys {
         pub io_close: Unused,
         pub fail: unsafe extern "C" fn(*const Api, Self_, *const c_char, usize) -> !,
         pub adopt: Unused,
+        pub call: Unused,
     }
 
     // The sizes lues.h asserts.
@@ -103,7 +104,7 @@ mod sys {
     const _: () = assert!(size_of::<Snapshot>() == 104);
     const _: () = assert!(size_of::<At>() == 40);
     const _: () = assert!(size_of::<Edit>() == 48);
-    const _: () = assert!(size_of::<Api>() == 152);
+    const _: () = assert!(size_of::<Api>() == 160);
 }
 
 /// The kernel's vtable and this load's handle. Copy: both are plain values the kernel owns.

@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define LUES_API 3
+#define LUES_API 4
 
 #define LUES_EXPORT __attribute__((visibility("default")))
 
@@ -19,6 +19,14 @@ typedef uint64_t lues_doc;
 typedef uint64_t lues_io;
 typedef uint32_t lues_kind;
 typedef uint16_t lues_token;
+
+#define LUES_NO_DOC UINT64_MAX /* resolves to no doc */
+
+typedef enum {
+    LUES_CALL_RAN    = 0,
+    LUES_CALL_ABSENT = 1, /* no such command, or its plugin is gone */
+    LUES_CALL_FAILED = 2  /* it faulted, or calls nested too deep */
+} lues_call_status;
 
 typedef enum {
     LUES_EVENT_CHORD  = 0,
@@ -187,6 +195,12 @@ typedef struct lues_api {
      * another plugin's .so. Adopt before the first call into it, and keep it open while you are
      * loaded: the kernel keeps counting whatever is mapped at its base as yours. */
     int32_t (*adopt)(const struct lues_api *api, lues_self self, const void *addr);
+
+    /* LUES_API 4. Runs the command `name` inside this call, on `doc`, as a bind would. `code`
+     * gets its exit when it ran. A fault in it unloads its plugin, not you. */
+    lues_call_status (*call)(const struct lues_api *api, lues_self self, lues_doc doc,
+                             const char *name, size_t name_len,
+                             const char *args, size_t args_len, int32_t *code);
 } lues_api;
 
 #ifdef __cplusplus
@@ -204,7 +218,7 @@ LUES_SIZE(lues_span, 32);
 LUES_SIZE(lues_span_pub, 40);
 LUES_SIZE(lues_kind_vt, 24);
 LUES_SIZE(lues_kind_spec, 64);
-LUES_SIZE(lues_api, 152);
+LUES_SIZE(lues_api, 160);
 
 /* Non-zero refuses the load and reverts what you registered. */
 #define LUES_MAIN LUES_EXPORT int32_t lues_main(const lues_api *api, lues_self self)

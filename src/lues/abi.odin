@@ -6,7 +6,7 @@ import "../docs"
 // (hole abi-codegen :tags (abi) :sev missing-system) lues.h and rustplug's sys module are kept in step with this file by hand; nothing generates them or checks they agree.
 // include/lues.h mirrors this.
 
-API :: 3 // 2: fail. 3: adopt
+API :: 4 // 2: fail. 3: adopt. 4: call
 
 ENTRY :: "lues_main"
 
@@ -18,6 +18,9 @@ Io :: distinct u64
 
 Kind :: distinct u32
 
+// Resolves to no doc.
+NO_DOC :: Doc_Handle(max(u64))
+
 Token :: u16
 
 Event :: enum c.int32_t {
@@ -26,6 +29,12 @@ Event :: enum c.int32_t {
     Moved,
     Io,
     Io_End,
+}
+
+Call_Status :: enum c.int32_t {
+    Ran,
+    Absent, // no such command, or its plugin is gone
+    Failed, // it faulted, or calls nested too deep
 }
 
 // --- the read view: the piece table, read in place ---
@@ -171,6 +180,10 @@ Api :: struct {
     fail:             proc "c" (api: ^Api, self: Self, msg: [^]u8, msg_len: c.size_t) -> !,
     // API 3. 0 when faults in the object holding addr are the plugin's from now on.
     adopt:            proc "c" (api: ^Api, self: Self, addr: rawptr) -> c.int32_t,
+    // API 4. Runs a command by name inside this call; `code` gets its exit when it ran.
+    call:             proc "c" (api: ^Api, self: Self, doc: Doc_Handle, name: [^]u8,
+                                name_len: c.size_t, args: [^]u8, args_len: c.size_t,
+                                code: ^c.int32_t) -> Call_Status,
 }
 
 #assert(size_of(Block) == 16)
@@ -183,7 +196,7 @@ Api :: struct {
 #assert(size_of(Span_Pub) == 40)
 #assert(size_of(Kind_Vt) == 24)
 #assert(size_of(Kind_Spec) == 64)
-#assert(size_of(Api) == 152)
+#assert(size_of(Api) == 160)
 
 pack :: proc "contextless" (lo, hi: u32) -> u64 {
     return u64(lo) | u64(hi) << 32

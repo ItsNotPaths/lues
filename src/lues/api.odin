@@ -38,7 +38,7 @@ api_init :: proc(k: ^Kernel) {
         io_close         = api_io_close,
         fail             = api_fail,
         adopt            = api_adopt,
-        // (hole plugin-calls :tags (compose abi) :sev missing-system) no call arm: a plugin cannot run another plugin's command.
+        call             = api_call,
         // (hole plugin-hooks :tags (compose abi) :sev missing-system) no hook arms: a plugin cannot declare a hook point for others to join.
         // (hole doc-vars :tags (compose abi) :sev missing-system) no per-document variables: plugins cannot share named state.
     }
@@ -325,6 +325,30 @@ api_adopt :: proc "c" (api: ^Api, self: Self, addr: rawptr) -> c.int32_t {
     append(&p.objects, base)
     fault_adopt(i, base)
     return 0
+}
+
+// A command that is gone is .Absent, not a fault: the caller can't know what is loaded.
+@(private = "file")
+api_call :: proc "c" (api: ^Api, self: Self, doc: Doc_Handle, name: [^]u8, name_len: uint,
+                      args: [^]u8, args_len: uint, code: ^c.int32_t) -> Call_Status {
+    k, _, ok := api_kernel(api, self)
+    defer api_done()
+    if !ok {
+        return .Failed
+    }
+    context = k.ctx
+    slot, named := cmd_named(k, string(name[:name_len]))
+    if !named {
+        return .Absent
+    }
+    r, ran := cmd_call(k, slot, doc_id(doc), string(args[:args_len]))
+    if !ran {
+        return .Failed
+    }
+    if code != nil {
+        code^ = r
+    }
+    return .Ran
 }
 
 @(private = "file")

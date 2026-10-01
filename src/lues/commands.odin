@@ -10,12 +10,18 @@ Plug_Cmd :: struct {
     fn:    Command_Fn,
 }
 
-// True on exit 0. What it submitted lands before this returns.
+// True on exit 0.
 cmd_run :: proc(k: ^Kernel, slot: int, focused: Maybe(docs.Id), args: string) -> bool {
+    code, ran := cmd_call(k, slot, focused, args)
+    return ran && code == 0
+}
+
+// What it submitted lands before this returns.
+cmd_call :: proc(k: ^Kernel, slot: int, focused: Maybe(docs.Id), args: string) -> (code: i32, ran: bool) {
     context = k.ctx
     if slot < 0 || slot >= len(k.cmds) || k.cmds[slot].owner < 0 {
         say(k, "that command's plugin is not loaded")
-        return false
+        return
     }
     c := k.cmds[slot]
     at: At
@@ -23,13 +29,10 @@ cmd_run :: proc(k: ^Kernel, slot: int, focused: Maybe(docs.Id), args: string) ->
         at = at_make(k, c.owner, id)
     }
     defer at_free(k, at)
-    // (hole advice :tags (compose abi) :sev missing-system :needs (plugin-calls)) the command's own fn always runs; another plugin cannot wrap it.
-    r, ok := dispatch(k, c.owner, {what = .Command, fn = c.fn, at = &at, data = transmute([]u8)args})
-    if !ok {
-        return false
-    }
+    // (hole advice :tags (compose abi) :sev missing-system) the command's own fn always runs; another plugin cannot wrap it.
+    r := dispatch(k, c.owner, {what = .Command, fn = c.fn, at = &at, data = transmute([]u8)args}) or_return
     kernel_settle(k)
-    return r.code == 0
+    return r.code, true
 }
 
 cmd_named :: proc(k: ^Kernel, name: string) -> (int, bool) {

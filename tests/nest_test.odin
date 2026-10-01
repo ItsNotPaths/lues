@@ -151,3 +151,22 @@ nest_deep_test :: proc(t: ^testing.T) {
     testing.expect_value(t, state(&k, "cplug"), lues.Plug_State.Live)
     testing.expect_value(t, state(&k, "nplug"), lues.Plug_State.Live)
 }
+
+// A call runs another plugin's command and hands back its exit. One that is gone is absent,
+// and one that faults unloads its own plugin.
+@(test)
+call_test :: proc(t: ^testing.T) {
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Nest_Box
+    defer lues.kernel_destroy(&k)
+    if !nest_host(t, &k, &box, &said, "call") {
+        return
+    }
+
+    testing.expect(t, run(&k, "call", nil, "hello 3"))
+    testing.expect(t, !run(&k, "call", nil, "nothing"))
+    testing.expect(t, !run(&k, "call", nil, "boom"))
+    testing.expect(t, !run(&k, "call", nil, "hello 0"))
+    testing.expect_value(t, strings.to_string(said), "3\nran 3\nabsent\ncplug faulted (SIGSEGV), and is unloaded\nfailed\nabsent\n")
+}
