@@ -342,7 +342,7 @@ unload :: proc(k: ^Kernel, i: int) {
         revert(k, p, r)
     }
     clear(&p.ledger)
-    // (hole plugin-arenas :tags (memory abi) :sev missing-system) no arena per plugin; what a faulted plugin allocated leaks.
+    // (hole plugin-arenas :tags (memory abi) :sev missing-system) no arena per plugin; what it allocated and still holds leaks on every unload.
     if p.state == .Live && !stopped {
         p.state = .Faulted
         say(k, fmt.tprintf("%s: a thread of its own did not stop, so it stays mapped", p.name))
