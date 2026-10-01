@@ -20,6 +20,9 @@ Hooks :: struct {
     side_make:  proc(k: ^Kernel, id: docs.Id, gen: u64) -> rawptr,
     side_free:  proc(k: ^Kernel, side: rawptr),
     land:       proc(k: ^Kernel, id: docs.Id, side: rawptr, landed: bool),
+    // A plugin's submit; the answer rides it as Txn.side. Splices are temp, text the plugin's.
+    submit_side: proc(k: ^Kernel, i: int, id: docs.Id, gen: u64, splices: []docs.Splice,
+                      flags: Submit_Flags) -> rawptr,
     // After each drain.
     drained:    proc(k: ^Kernel),
     // After each dispatch, on top of store_check.

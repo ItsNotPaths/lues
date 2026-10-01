@@ -241,7 +241,13 @@ api_submit :: proc "c" (api: ^Api, self: Self, doc: Doc_Handle, gen: u64, edits:
     }
     history := docs.History.Forget if .Forget in flags else .Join if .Join in flags else .Step
     id := doc_id(doc)
-    tag := docs.store_submit(&k.store, id, gen, splices, pub, nil, history)
+    side: rawptr
+    if k.hooks.submit_side != nil {
+        context = k.host
+        side = k.hooks.submit_side(k, i, id, gen, splices, flags)
+        context = k.ctx
+    }
+    tag := docs.store_submit(&k.store, id, gen, splices, pub, side, history)
     if inst, held := &k.insts[id]; held && inst.owner == i {
         watch_submit(&inst.told, gen, tag)
     }

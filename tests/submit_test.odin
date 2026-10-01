@@ -75,3 +75,59 @@ spans_test :: proc(t: ^testing.T) {
     lues.loader_unload(&k, i)
     testing.expect_value(t, len(docs.spans_read(&k.store, id, 0, 3, {who})), 0)
 }
+
+// hooks.submit_side sees a plugin's splices and flags, and land gets its answer, landed or not.
+@(test)
+side_test :: proc(t: ^testing.T) {
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Api_Box
+    defer lues.kernel_destroy(&k)
+    if _, ok := plug_host(t, &k, &box, &said, "side"); !ok {
+        return
+    }
+    seen: Side_Seen
+    seen.texts.allocator = context.temp_allocator
+    seen.landed.allocator = context.temp_allocator
+    // k.user is the say builder; the side carries ^Side_Seen to land.
+    side_seen = &seen
+    k.hooks.submit_side = proc(k: ^lues.Kernel, i: int, id: docs.Id, gen: u64,
+                               splices: []docs.Splice, flags: lues.Submit_Flags) -> rawptr {
+        for sp in splices {
+            append(&side_seen.texts, strings.clone(string(sp.text), context.temp_allocator))
+        }
+        if .Forget in flags {
+            side_seen.forget += 1
+        }
+        return side_seen
+    }
+    k.hooks.land = proc(k: ^lues.Kernel, id: docs.Id, side: rawptr, landed: bool) {
+        append(&(^Side_Seen)(side).landed, landed)
+    }
+    id := docs.store_open(&k.store, transmute([]u8)string("ab"))
+
+    testing.expect(t, run(&k, "append", id, "cd"))
+    testing.expect(t, run(&k, "derive", id, "!"))
+    testing.expect(t, run(&k, "race", id, "X"))
+    testing.expect_value(t, len(seen.texts), 4)
+    if len(seen.texts) == 4 {
+        testing.expect_value(t, seen.texts[0], "cd")
+        testing.expect_value(t, seen.texts[1], "!")
+    }
+    testing.expect_value(t, seen.forget, 1)
+    testing.expect_value(t, len(seen.landed), 4)
+    if len(seen.landed) == 4 {
+        testing.expect(t, seen.landed[0] && seen.landed[1] && seen.landed[2] && !seen.landed[3])
+    }
+}
+
+@(private = "file")
+Side_Seen :: struct {
+    texts:  [dynamic]string,
+    forget: int,
+    landed: [dynamic]bool,
+}
+
+// Only side_test sets it.
+@(private = "file")
+side_seen: ^Side_Seen
