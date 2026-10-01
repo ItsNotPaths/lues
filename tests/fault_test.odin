@@ -104,6 +104,63 @@ libc_blame_test :: proc(t: ^testing.T) {
     crash(t, "libc-blame", "strboom", .SIGSEGV)
 }
 
+// A plugin's own fault handler never replaces lues's: through signal it is only chained, and
+// SIGALRM is refused. A fault in the plugin's code still unloads it.
+@(test)
+kept_test :: proc(t: ^testing.T) {
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Api_Box
+    defer lues.kernel_destroy(&k)
+    if _, ok := plug_host(t, &k, &box, &said, "kept"); !ok {
+        return
+    }
+
+    testing.expect(t, run(&k, "sigign"))
+    testing.expect(t, !run(&k, "boom"))
+    testing.expect_value(t, lues.loader_find(&k, "cplug"), -1)
+    testing.expect(t, strings.contains(strings.to_string(said), "SIGSEGV"), strings.to_string(said))
+}
+
+// A raw syscall goes around the export; lues puts its handler back after the call.
+@(test)
+raw_kept_test :: proc(t: ^testing.T) {
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Api_Box
+    defer lues.kernel_destroy(&k)
+    if _, ok := plug_host(t, &k, &box, &said, "raw-kept"); !ok {
+        return
+    }
+
+    testing.expect(t, run(&k, "rawsig"))
+    testing.expect(t, strings.contains(strings.to_string(said), "replaced a fault handler"), strings.to_string(said))
+    testing.expect(t, !run(&k, "boom"))
+    testing.expect_value(t, lues.loader_find(&k, "cplug"), -1)
+}
+
+// A fault lues would die on goes to the plugin's own handler first, which can recover it.
+@(test)
+chain_test :: proc(t: ^testing.T) {
+    data, staged := stage(t, "chain", "cplug", "grammar")
+    if !staged {
+        return
+    }
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Api_Box
+    testing.expect(t, test_host(&k, &box, {home = {data = data}}))
+    defer lues.kernel_destroy(&k)
+    k.hooks.say, k.user = heard, &said
+    if !testing.expect(t, lues.loader_load(&k, lues.loader_path(&k, "cplug")), strings.to_string(said)) {
+        return
+    }
+
+    testing.expect(t, run(&k, "catch", args = lues.loader_path(&k, "grammar")), strings.to_string(said))
+    testing.expect(t, lues.loader_find(&k, "cplug") >= 0)
+    testing.expect(t, run(&k, "hello"))
+}
+
 // The trace's first line is the plugin's own object, with an offset.
 @(test)
 trace_test :: proc(t: ^testing.T) {

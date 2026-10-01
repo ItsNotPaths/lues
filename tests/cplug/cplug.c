@@ -1,13 +1,17 @@
 /* The C test plugin, against lues.h only. Each test adds the arms it needs. */
 #define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE /* syscall */
 
 #include <dlfcn.h>
 #include <pthread.h>
+#include <setjmp.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
 #include <string.h>
+#include <sys/syscall.h>
 #include "../../include/lues.h"
 
 #define LIT(s) s, sizeof(s) - 1
@@ -42,6 +46,62 @@ static int32_t strboom(const lues_api *api, lues_self self, const lues_at *at, c
                        size_t args_len) {
     (void)api, (void)self, (void)at, (void)args, (void)args_len;
     return (int32_t)strlen((const char *)NOWHERE);
+}
+
+/* `catch <path>`: its own SIGSEGV handler jumps back out of a fault in the unadopted grammar,
+ * the way wasmtime handles a trap in its JIT code. Exits 0 when caught. */
+static int32_t grammar(const lues_api *api, lues_self self, const char *args, size_t args_len,
+                       int adopt);
+
+static sigjmp_buf CATCH;
+
+static void catch_segv(int sig, siginfo_t *info, void *uc) {
+    (void)sig, (void)info, (void)uc;
+    siglongjmp(CATCH, 1);
+}
+
+static int32_t catch_cmd(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                         size_t args_len) {
+    struct sigaction sa;
+    (void)at;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = catch_segv;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0) {
+        return 1;
+    }
+    if (sigsetjmp(CATCH, 1)) {
+        return 0;
+    }
+    grammar(api, self, args, args_len, 0);
+    return 2;
+}
+
+/* Ignores SIGSEGV through signal, which must not reach libc; SIGALRM must be refused. */
+static int32_t sigign(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                      size_t args_len) {
+    struct sigaction sa;
+    (void)api, (void)self, (void)at, (void)args, (void)args_len;
+    if (signal(SIGSEGV, SIG_IGN) == SIG_ERR) {
+        return 1;
+    }
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = SIG_IGN;
+    return sigaction(SIGALRM, &sa, NULL) == -1 ? 0 : 2;
+}
+
+/* Ignores SIGSEGV with the raw syscall, around the export. */
+static int32_t rawsig(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                      size_t args_len) {
+    struct {
+        void         *handler;
+        unsigned long flags;
+        void         *restorer;
+        unsigned long mask;
+    } ksa = {(void *)SIG_IGN, 0, NULL, 0};
+    (void)api, (void)self, (void)at, (void)args, (void)args_len;
+    return (int32_t)syscall(SYS_rt_sigaction, SIGSEGV, &ksa, NULL, sizeof ksa.mask);
 }
 
 /* Five seconds, bounded like hang. */
@@ -451,6 +511,9 @@ LUES_MAIN {
     api->register_command(api, self, LIT("hang"), LIT("stop returning"), hang);
     api->register_command(api, self, LIT("sortboom"), LIT("fault under qsort"), sortboom);
     api->register_command(api, self, LIT("strboom"), LIT("fault in strlen"), strboom);
+    api->register_command(api, self, LIT("catch"), LIT("catch a grammar fault itself"), catch_cmd);
+    api->register_command(api, self, LIT("sigign"), LIT("ignore SIGSEGV through signal"), sigign);
+    api->register_command(api, self, LIT("rawsig"), LIT("ignore SIGSEGV by syscall"), rawsig);
     api->register_command(api, self, LIT("sorthang"), LIT("stop returning under qsort"), sorthang);
     api->register_command(api, self, LIT("churn"), LIT("stop returning in malloc"), churn);
     api->register_command(api, self, LIT("fail"), LIT("fail with the args"), fail);

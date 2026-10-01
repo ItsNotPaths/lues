@@ -111,8 +111,6 @@ g_libc: uintptr // blame looks through its frames to the caller
 // --- install ---
 
 // Handlers are per process, the alt stack per thread, so a second caller only adds its stack.
-// (hole interpose :tags (fault abi) :sev missing-system) liblues exports no sigaction or pthread_create of its own, so a plugin's calls reach libc; untested whether an export wins for dlopened plugins in every link order.
-// (hole net-kept :tags fault :sev wrong-behavior :needs interpose) nothing stops or notices a plugin's sigaction over these handlers; its next fault kills the process unblamed.
 fault_install :: proc() -> bool {
     // Keep an existing alt stack: ASan unmaps its own at thread exit.
     old: posix.stack_t
@@ -128,12 +126,8 @@ fault_install :: proc() -> bool {
     if g_installed {
         return true
     }
-    act: posix.sigaction_t
-    act.sa_sigaction = fault_handler
-    act.sa_flags = {.SIGINFO, .ONSTACK}
-    posix.sigemptyset(&act.sa_mask)
     for sig in FAULT_SIGNALS {
-        if posix.sigaction(sig, &act, nil) != .OK {
+        if !install(sig) {
             return false
         }
     }
@@ -148,6 +142,50 @@ fault_install :: proc() -> bool {
 
 fault_ready :: proc() -> bool {
     return g_installed
+}
+
+@(private = "file")
+install :: proc "contextless" (sig: posix.Signal) -> bool {
+    act := posix.sigaction_t {
+        sa_sigaction = fault_handler,
+        sa_flags     = {.SIGINFO, .ONSTACK},
+    }
+    posix.sigemptyset(&act.sa_mask)
+    return os_sigaction(sig, &act, nil) == .OK
+}
+
+// A plugin that went around the exports (a raw syscall) to replace a fault handler: lues's goes
+// back, and the plugin's is chained. True when there was one.
+fault_kept :: proc(k: ^Kernel, i: int) -> (replaced: bool) {
+    for sig in FAULT_SIGNALS {
+        cur: posix.sigaction_t
+        if os_sigaction(sig, nil, &cur) != .OK || cur.sa_sigaction == fault_handler {
+            continue
+        }
+        fault_chain(&k.plugs[i], sig)^ = cur
+        install(sig)
+        replaced = true
+    }
+    return
+}
+
+// The plugin whose code runs on this thread, outside an api call; nil for none.
+fault_running :: proc "contextless" () -> (k: ^Kernel, i: int) {
+    f := top()
+    if f == nil || intrinsics.atomic_load(&f.busy) {
+        return nil, -1
+    }
+    return f.app, f.who
+}
+
+// The handler a plugin set for a fault signal; nil for any other signal.
+fault_chain :: proc "contextless" (p: ^Plugin, sig: posix.Signal) -> ^posix.sigaction_t {
+    for s, n in FAULT_SIGNALS {
+        if s == sig {
+            return &p.chain[n]
+        }
+    }
+    return nil
 }
 
 fault_object_base :: proc(addr: rawptr) -> uintptr {
@@ -287,30 +325,52 @@ put_name :: proc "contextless" (buf: []u8, name: string) -> int {
 //
 // Async-signal-safe: no allocation, no lock, no fmt. dladdr is the one exception.
 
+// (hole leaf-libc-faults :tags fault :sev missing-system) no table of libc's lock-free leaves from its debug symbols, so a fault in memcpy or strlen the plugin called is not unwound.
+// (hole plugin-threads :tags fault :sev missing-system) a thread a plugin started has no frame, so a fault on it dies unblamed.
 @(private = "file")
 fault_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr) {
     pc := fault_ip(uc)
     n, at := walk(pc)
-    g_guard.traced = trace_write(n, signal_name(sig))
     f := top()
     // Inside an api call the plugin's call caused it, wherever the pc is: quarantined, so the
     // next start does not load it into the same crash.
     if f != nil && intrinsics.atomic_load(&f.busy) {
+        g_guard.traced = trace_write(n, signal_name(sig))
         die(sig, f.name[:f.n])
         return
     }
-    // (hole leaf-libc-faults :tags fault :sev missing-system) no table of libc's lock-free leaves from its debug symbols, so a fault in memcpy or strlen the plugin called is not unwound.
-    // (hole plugin-threads :tags fault :sev missing-system :needs interpose) a thread a plugin started has no frame, so a fault on it dies unblamed.
-    if !in_plugin(f, pc) {
-        die(sig, blamed(f, n, at))
+    if in_plugin(f, pc) && owned(f, n, at) {
+        g_guard.traced = trace_write(n, signal_name(sig))
+        unwind(signal_name(sig))
+    }
+    if chained(f, sig, info, uc) {
         return
     }
-    // Its fault, under code that is not its own, which may hold a lock the jump would leave held.
-    if !owned(f, n, at) {
-        die(sig, f.name[:f.n])
-        return
+    g_guard.traced = trace_write(n, signal_name(sig))
+    // Its fault under code that is not its own, which may hold a lock the jump would leave
+    // held; or a fault in libc that it called.
+    die(sig, f.name[:f.n] if in_plugin(f, pc) else blamed(f, n, at))
+}
+
+// The plugin's own handler, for a fault lues would die on (wasmtime's, for a trap in its JIT
+// code). It returns to retry the access, or jumps away. One that retries forever is a hang,
+// and the watchdog ends it.
+@(private = "file")
+chained :: proc "contextless" (f: ^Frame, sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr) -> bool {
+    if f == nil {
+        return false
     }
-    unwind(signal_name(sig))
+    act := fault_chain(&f.app.plugs[f.who], sig)^
+    switch rawptr(act.sa_handler) {
+    case rawptr(posix.SIG_DFL), rawptr(posix.SIG_IGN):
+        return false
+    }
+    if .SIGINFO in act.sa_flags {
+        act.sa_sigaction(sig, info, uc)
+    } else {
+        act.sa_handler(sig)
+    }
+    return true
 }
 
 // A hang in code that is not the plugin's may hold a lock there, so it is not unwound: the
@@ -458,7 +518,10 @@ die :: proc "contextless" (sig: posix.Signal, who: []u8) {
     if report := intrinsics.atomic_load(&g_report); len(who) > 1 && report != 0 {
         posix.write(posix.FD(report), raw_data(who), uint(len(who)))
     }
-    posix.signal(sig, auto_cast posix.SIG_DFL)
+    dfl := posix.sigaction_t {
+        sa_handler = auto_cast posix.SIG_DFL,
+    }
+    os_sigaction(sig, &dfl, nil)
     posix.kill(posix.getpid(), sig)
 }
 
@@ -793,11 +856,11 @@ fault_watchdog_start :: proc(ms := PLUG_HANG_MS) {
     act.sa_sigaction = hang_handler
     act.sa_flags = {.SIGINFO, .ONSTACK}
     posix.sigemptyset(&act.sa_mask)
-    if posix.sigaction(.SIGALRM, &act, nil) != .OK {
+    if os_sigaction(.SIGALRM, &act, nil) != .OK {
         return
     }
     act.sa_sigaction = step_handler
-    if posix.sigaction(.SIGTRAP, &act, nil) != .OK {
+    if os_sigaction(.SIGTRAP, &act, nil) != .OK {
         return
     }
     g_watch_ms = i64(ms)

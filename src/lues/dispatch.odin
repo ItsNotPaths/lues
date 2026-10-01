@@ -61,6 +61,9 @@ dispatch :: proc(k: ^Kernel, i: int, c: Call) -> (r: Ret, ok: bool) {
     fault_arm(k, i, rawptr(c.app))
     r = run(k, i, c)
     fault_disarm()
+    if fault_kept(k, i) {
+        say(k, fmt.tprintf("%s replaced a fault handler; lues's is back, and the plugin's runs after it", k.plugs[i].name))
+    }
     return r, intact(k, i) && k.plugs[i].state == .Live && k.plugs[i].gen == gen
 }
 

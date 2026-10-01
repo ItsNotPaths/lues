@@ -27,6 +27,7 @@ Plugin :: struct {
     seen:    map[docs.Id]Watch,
     held:    [dynamic]^View, // snapshots it holds past a call; released at unload
     objects: [dynamic]uintptr, // bases of objects it adopted; guard 1 blames it for these
+    chain:   [len(FAULT_SIGNALS)]posix.sigaction_t, // its own fault handlers, run before lues dies
 }
 
 // Faulted keeps the library mapped: dlclose would run more of the code that died.
@@ -285,6 +286,7 @@ unload :: proc(k: ^Kernel, i: int) {
     }
     clear(&k.plugs[i].held)
     clear(&k.plugs[i].objects)
+    k.plugs[i].chain = {}
     if who, published := producer_find(k, k.plugs[i].name); published {
         docs.spans_forget(&k.store, who)
     }
