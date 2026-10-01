@@ -28,8 +28,11 @@ Plugin :: struct {
     seen:    map[docs.Id]Watch,
     held:    [dynamic]^View, // snapshots it holds past a call; released at unload
     objects: [dynamic]uintptr, // bases of objects it adopted; guard 1 blames it for these
-    chain:   [len(FAULT_SIGNALS)]posix.sigaction_t, // its own fault handlers, run before lues dies
+    chain:   ^Chain, // its own fault handlers; its own allocation, so a thread can reach it
 }
+
+// A plugin's handlers for FAULT_SIGNALS, in that order, run before lues dies.
+Chain :: [len(FAULT_SIGNALS)]posix.sigaction_t
 
 // Faulted keeps the library mapped: dlclose would run more of the code that died.
 // (hole faulted-fini :tags loader :sev wrong-behavior) still mapped, so glibc runs its destructors at exit; no frame is armed then, so a crash there is not blamed on it.
@@ -199,7 +202,7 @@ loader_slot :: proc(k: ^Kernel, name, path: string) -> int {
             return i
         }
     }
-    append(&k.plugs, Plugin{name = strings.clone(name), path = strings.clone(path)})
+    append(&k.plugs, Plugin{name = strings.clone(name), path = strings.clone(path), chain = new(Chain)})
     return len(k.plugs) - 1
 }
 
@@ -300,7 +303,7 @@ unload :: proc(k: ^Kernel, i: int) {
     }
     clear(&k.plugs[i].held)
     clear(&k.plugs[i].objects)
-    k.plugs[i].chain = {}
+    k.plugs[i].chain^ = {}
     if who, published := producer_find(k, k.plugs[i].name); published {
         docs.spans_forget(&k.store, who)
     }

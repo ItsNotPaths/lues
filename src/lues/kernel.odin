@@ -114,6 +114,7 @@ kernel_destroy :: proc(k: ^Kernel) {
     for p in k.plugs {
         delete(p.name)
         delete(p.path)
+        free(p.chain)
         delete(p.ledger)
         delete(p.seen)
         delete(p.held)

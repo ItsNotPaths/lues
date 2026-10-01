@@ -11,15 +11,15 @@ import "core:sys/posix"
 
 @(export, link_name = "sigaction")
 interpose_sigaction :: proc "c" (sig: posix.Signal, act, old: ^posix.sigaction_t) -> posix.result {
-    k, i := fault_running()
-    if k == nil {
+    running := fault_running()
+    if running == nil {
         return os_sigaction(sig, act, old)
     }
     if sig == .SIGALRM || sig == .SIGTRAP {
         posix.errno(.EINVAL)
         return .FAIL
     }
-    chain := fault_chain(&k.plugs[i], sig)
+    chain := fault_chain(running, sig)
     if chain == nil {
         return os_sigaction(sig, act, old)
     }

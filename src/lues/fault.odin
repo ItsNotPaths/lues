@@ -56,6 +56,7 @@ Frame :: struct {
     app:      ^Kernel,
     who:      int,
     gen:      u32,
+    chain:    ^Chain,
     base:     uintptr,
     via:      rawptr, // .App's trampoline: the app's frame sits under the plugin's
     // The plugin's adopted objects, copied at arm time: the handler cannot follow its array.
@@ -163,27 +164,27 @@ fault_kept :: proc(k: ^Kernel, i: int) -> (replaced: bool) {
         if os_sigaction(sig, nil, &cur) != .OK || cur.sa_sigaction == fault_handler {
             continue
         }
-        fault_chain(&k.plugs[i], sig)^ = cur
+        fault_chain(k.plugs[i].chain, sig)^ = cur
         install(sig)
         replaced = true
     }
     return
 }
 
-// The plugin whose code runs on this thread, outside an api call; nil for none.
-fault_running :: proc "contextless" () -> (k: ^Kernel, i: int) {
+// The chain of the plugin whose code runs on this thread, outside an api call; nil for none.
+fault_running :: proc "contextless" () -> ^Chain {
     f := top()
     if f == nil || intrinsics.atomic_load(&f.busy) {
-        return nil, -1
+        return nil
     }
-    return f.app, f.who
+    return f.chain
 }
 
 // The handler a plugin set for a fault signal; nil for any other signal.
-fault_chain :: proc "contextless" (p: ^Plugin, sig: posix.Signal) -> ^posix.sigaction_t {
+fault_chain :: proc "contextless" (chain: ^Chain, sig: posix.Signal) -> ^posix.sigaction_t {
     for s, n in FAULT_SIGNALS {
         if s == sig {
-            return &p.chain[n]
+            return &chain[n]
         }
     }
     return nil
@@ -220,7 +221,7 @@ fault_env :: proc() -> ^Jmp_Buf {
 fault_arm :: proc(a: ^Kernel, i: int, via: rawptr = nil) {
     p := &a.plugs[i]
     f := next()
-    f.app, f.who, f.gen, f.base, f.via = a, i, p.gen, p.base, via
+    f.app, f.who, f.gen, f.chain, f.base, f.via = a, i, p.gen, p.chain, p.base, via
     f.nobjects = copy(f.objects[:], p.objects[:])
     f.n = put_name(f.name[:], p.name)
     push(f)
@@ -382,7 +383,7 @@ fault_thread_main :: proc "c" (arg: rawptr) -> rawptr {
     }
     p := &start.parent
     f := next()
-    f.app, f.who, f.gen, f.base, f.via = p.app, p.who, p.gen, p.base, nil
+    f.app, f.who, f.gen, f.chain, f.base, f.via = p.app, p.who, p.gen, p.chain, p.base, nil
     f.objects, f.nobjects, f.name, f.n = p.objects, p.nobjects, p.name, p.n
     push(f)
     ret := start.fn(start.arg)
@@ -442,7 +443,7 @@ chained :: proc "contextless" (f: ^Frame, sig: posix.Signal, info: ^posix.siginf
     if f == nil {
         return false
     }
-    act := fault_chain(&f.app.plugs[f.who], sig)^
+    act := fault_chain(f.chain, sig)^
     switch rawptr(act.sa_handler) {
     case rawptr(posix.SIG_DFL), rawptr(posix.SIG_IGN):
         return false
