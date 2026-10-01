@@ -504,7 +504,7 @@ post :: proc "contextless" () {
 //
 // Async-signal-safe: no allocation, no lock, no fmt. dladdr is the one exception.
 
-// (hole leaf-libc-faults :tags fault :sev missing-system) no table of libc's lock-free leaves from its debug symbols, so a fault in memcpy or strlen the plugin called is not unwound.
+// (hole leaf-libc-faults :tags fault :sev missing-system) a fault in memcpy or strlen the plugin called is blamed, not unwound: nothing here knows which libc code takes no lock.
 @(private = "file")
 fault_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr) {
     pc := fault_ip(uc)
