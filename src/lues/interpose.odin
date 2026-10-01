@@ -23,6 +23,8 @@ interpose_sigaction :: proc "c" (sig: posix.Signal, act, old: ^posix.sigaction_t
     if chain == nil {
         return os_sigaction(sig, act, old)
     }
+    pkey_write(true) // the chain is kernel memory
+    defer fault_pkey_sync()
     if old != nil {
         old^ = chain^
     }

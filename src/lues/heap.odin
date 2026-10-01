@@ -29,6 +29,7 @@ PAGE :: 4096
 HEADER :: 64
 
 heap_init :: proc(h: ^Heap) -> bool {
+    pkey_init()
     pages := runtime.Allocator{procedure = pages_proc}
     if tlsf.init(&h.tlsf, pages, HEAP_POOL, HEAP_POOL) != .None {
         return false
@@ -111,6 +112,7 @@ take :: proc(h: ^Heap, size, alignment: int, zero: bool) -> ([]byte, runtime.All
         if err != .NONE {
             return nil, .Out_Of_Memory
         }
+        pkey_tag(p, n)
         h.large[uintptr(p)] = n
         h.live += 1
         return ([^]u8)(p)[:size], nil // fresh pages are zero
@@ -183,6 +185,7 @@ pages_proc :: proc(data: rawptr, mode: runtime.Allocator_Mode, size, alignment: 
         if err != .NONE {
             return nil, .Out_Of_Memory
         }
+        pkey_tag(p, n)
         (^int)(p)^ = n
         return ([^]u8)(p)[HEADER:][:size], nil
     case .Free:

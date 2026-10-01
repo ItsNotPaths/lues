@@ -266,6 +266,7 @@ push :: proc(f: ^Frame) {
     g.why, g.traced = "", false
     watch_push(f)
     intrinsics.atomic_store(&g.depth, intrinsics.atomic_load(&g.depth) + 1)
+    fault_pkey_sync()
 }
 
 // An object adopted during the call counts at once, in every frame of the plugin, not from
@@ -286,11 +287,19 @@ fault_disarm :: proc() {
 }
 
 // Guard 2: a fault while busy is not unwound.
-// (hole pkey-tagging :tags (memory fault) :sev missing-system) kernel memory stays writable during plugin code; a stray plugin write corrupts it without a fault.
 fault_busy :: proc "contextless" (on: bool) {
     if f := top(); f != nil {
         intrinsics.atomic_store(&f.busy, on)
+        fault_pkey_sync()
     }
+}
+
+// Plugin code can't write kernel memory: on this thread under a frame, outside an api call.
+// Kernel code that plugin code reaches without an api call (interpose) opens it with
+// pkey_write(true), and calls this after.
+fault_pkey_sync :: proc "contextless" () {
+    f := top()
+    pkey_write(f == nil || intrinsics.atomic_load(&f.busy))
 }
 
 // The api's fail: the same jump as a fault, taken on purpose, so no guard 1. It can't jump
@@ -347,6 +356,7 @@ pop :: proc "contextless" () -> ^Frame {
         g_guard.step = 0
     }
     watch_pop(f)
+    fault_pkey_sync()
     return f
 }
 
@@ -408,6 +418,8 @@ fault_thread :: proc "contextless" (fn: proc "c" (arg: rawptr) -> rawptr, arg: r
         return nil, true
     }
     slot.app, slot.who, slot.gen, slot.told = f.app, f.who, f.gen, false
+    pkey_write(true)
+    defer fault_pkey_sync()
     context = runtime.default_context()
     s := new(Thread_Start, f.ctx.allocator)
     if s == nil {
@@ -422,11 +434,14 @@ fault_thread :: proc "contextless" (fn: proc "c" (arg: rawptr) -> rawptr, arg: r
 fault_thread_drop :: proc "contextless" (arg: rawptr) {
     s := (^Thread_Start)(arg)
     intrinsics.atomic_store(&s.slot.state, .Free)
+    pkey_write(true)
+    defer fault_pkey_sync()
     context = runtime.default_context()
     free(s, s.parent.ctx.allocator)
 }
 
 fault_thread_main :: proc "c" (arg: rawptr) -> rawptr {
+    pkey_write(true) // it was started from plugin code, and inherits its rights
     s := (^Thread_Start)(arg)
     context = runtime.default_context()
     context.allocator = s.parent.ctx.allocator
@@ -518,6 +533,7 @@ post :: proc "contextless" () {
 // (hole leaf-libc-faults :tags fault :sev missing-system) a fault in memcpy or strlen the plugin called is blamed, not unwound: nothing here knows which libc code takes no lock.
 @(private = "file")
 fault_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr) {
+    pkey_write(true) // Linux enters a handler with the key's access disabled
     pc := fault_ip(uc)
     n, at := walk(pc)
     f := top()
@@ -568,6 +584,7 @@ chained :: proc "contextless" (f: ^Frame, sig: posix.Signal, info: ^posix.siginf
     case rawptr(posix.SIG_DFL), rawptr(posix.SIG_IGN):
         return false
     }
+    fault_pkey_sync() // the plugin's own code
     if .SIGINFO in act.sa_flags {
         act.sa_sigaction(sig, info, uc)
     } else {
@@ -581,6 +598,7 @@ chained :: proc "contextless" (f: ^Frame, sig: posix.Signal, info: ^posix.siginf
 // blocked syscall comes back with EINTR, since the alarm has no SA_RESTART.
 @(private = "file")
 hang_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr) {
+    pkey_write(true)
     g := &g_guard
     f := top()
     if f == nil {
@@ -609,6 +627,7 @@ hang_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr)
 // its own frames under it. A nested dispatch is stepped through.
 @(private = "file")
 step_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr) {
+    pkey_write(true)
     g := &g_guard
     d := intrinsics.atomic_load(&g.depth)
     if g.step == 0 || d < g.step {
@@ -636,6 +655,7 @@ step_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr)
 // code first when it is in libc or an api call.
 @(private = "file")
 reap_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr) {
+    pkey_write(true)
     g := &g_guard
     f := top()
     if f == nil || g.step != 0 {

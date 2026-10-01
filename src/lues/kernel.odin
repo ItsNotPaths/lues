@@ -85,6 +85,12 @@ Kernel :: struct {
     },
 }
 
+// For a thread started before kernel_init, before it calls into lues: it may not touch kernel
+// memory until then. Threads started after kernel_init, by its caller, need nothing.
+kernel_thread :: proc() {
+    pkey_write(true)
+}
+
 // k must not move after this. The hang watchdog is the caller's to start.
 kernel_init :: proc(k: ^Kernel, spec: Spec) -> bool {
     k.spec = spec

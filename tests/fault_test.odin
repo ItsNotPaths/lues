@@ -38,6 +38,23 @@ segv_test :: proc(t: ^testing.T) {
     testing.expect(t, run(&k, "hello"))
 }
 
+// A write into kernel memory faults where it happens, and only the plugin goes.
+@(test)
+pkey_test :: proc(t: ^testing.T) {
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Api_Box
+    defer lues.kernel_destroy(&k)
+    if _, ok := plug_host(t, &k, &box, &said, "pkey"); !ok || !lues.pkey_ready() {
+        return // without pkeys the write lands
+    }
+    doc := docs.store_open(&k.store, transmute([]u8)string("kept"))
+
+    testing.expect(t, !run(&k, "scribble", doc))
+    testing.expect_value(t, strings.to_string(said), "cplug faulted (SIGSEGV), and is unloaded")
+    testing.expect_value(t, doc_text(&k, doc), "kept")
+}
+
 // A reload after a fault maps a fresh copy: the dead image's globals don't come back.
 @(test)
 fresh_test :: proc(t: ^testing.T) {

@@ -27,6 +27,14 @@ static int32_t boom(const lues_api *api, lues_self self, const lues_at *at, cons
     return 0;
 }
 
+/* Writes into the snapshot, which is kernel memory: faults where pkeys guard it. */
+static int32_t scribble(const lues_api *api, lues_self self, const lues_at *at,
+                        const char *args, size_t args_len) {
+    (void)api, (void)self, (void)args, (void)args_len;
+    ((lues_snapshot *)at->snap)->size = 0;
+    return 0;
+}
+
 /* Faults in a qsort comparator: libc's frames sit between the fault and dispatch. */
 static int boom_cmp(const void *a, const void *b) {
     (void)a, (void)b;
@@ -715,6 +723,7 @@ LUES_MAIN {
     api->register_command(api, self, LIT("hello"), LIT("say the args, exit with a digit"), hello);
     api->register_command(api, self, LIT("size"), LIT("say the focused doc's size"), size);
     api->register_command(api, self, LIT("boom"), LIT("dereference null"), boom);
+    api->register_command(api, self, LIT("scribble"), LIT("write into kernel memory"), scribble);
     api->register_command(api, self, LIT("hang"), LIT("stop returning"), hang);
     api->register_command(api, self, LIT("sortboom"), LIT("fault under qsort"), sortboom);
     api->register_command(api, self, LIT("strboom"), LIT("fault in strlen"), strboom);
