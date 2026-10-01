@@ -119,8 +119,7 @@ and commands today.
 1. nested-dispatch-blame (done, 2026-09-29): plugin-to-plugin calls nest dispatches, so the guard becomes
    a stack and a fault blames the innermost plugin.
 2. ledger-scopes (done, 2026-10-01): tag each ledger record with `(plugin, scope)`, so `close` can revert one
-   scope. Hooks and watches added inside a kind's `open` go into its scope. Also reserve a
-   `needs` field in the plugin descriptor now, while the ABI is cheap to change.
+   scope. Hooks and watches added inside a kind's `open` go into its scope.
 3. plugin-calls (done, 2026-10-01): late-bound `call(name, args)` through the command table. A call to a target
    that is gone returns a defined "absent" result, not a fault.
 4. plugin-hooks (done, 2026-10-01): `hook_define`, `hook_add` and `hook_run`, with `emit` and `bail` modes and
@@ -150,10 +149,8 @@ dependencies and are activated or deactivated as those come and go (lues has not
   crashing but leave it half-working and uninformed. If A declared "needs B", the kernel could
   revert A through its ledger when B goes and bring it back when B reloads, so a crash degrades
   exactly the plugins that depended on the one that crashed. Would build on plugin-calls,
-  plugin-hooks and advice.
-- **Instance scopes.** Hooks, watches and doc-vars registered inside a kind's `open` would be
-  reverted automatically at `close`: the same ledger, one level down, instead of each plugin
-  cleaning up by hand.
+  plugin-hooks and advice. Probably not needed: a plugin can check for what it needs itself
+  (`call` says ABSENT) and tell the user through the app.
 - **Services as named, versioned interfaces.** Depend on a capability ("formatter v1") instead
   of a plugin name, so another provider can stand in. plugin-calls by string name is the weak
   form of this.
