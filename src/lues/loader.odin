@@ -88,6 +88,7 @@ loader_load :: proc(k: ^Kernel, path: string) -> bool {
     p.lib = lib
     p.copy = copy
     p.base = fault_object_base(sym)
+    fault_runtime(rawptr(lib), p.base)
     p.gen += 1
     p.state = .Live
 

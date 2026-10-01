@@ -114,6 +114,17 @@ g_libc: uintptr // blame looks through its frames to the caller
 @(private = "file")
 g_abort_safe: bool // this glibc's abort raises before it takes any lock
 
+// The C++ runtime's objects (libstdc++, libc++abi, libgcc_s): blame looks through them, as
+// through libc. Found from each plugin's own symbols at load; a static runtime is the plugin's.
+@(private = "file")
+RUNTIME_MAX :: 8
+
+@(private = "file")
+g_runtime: [RUNTIME_MAX]uintptr
+
+@(private = "file")
+g_nruntime: int // atomic
+
 // --- install ---
 
 // Handlers are per process, the alt stack per thread, so a second caller only adds its stack.
@@ -657,6 +668,7 @@ in_plugin :: proc "contextless" (f: ^Frame, pc: uintptr) -> bool {
     return mine(f, uintptr(info.dli_fbase))
 }
 
+// (hole cxx-runtime-frames :tags fault :sev wrong-behavior) a C++ runtime frame under the plugin's (libstdc++'s std::thread trampoline) counts as foreign, so a fault on a std::thread dies and its reap never ends it.
 // Guard 1 for the rest of the stack: every frame under `at`, down to the dispatch frame, is
 // the plugin's. A walk that missed the pc (at < 0), or ends first, judges only what it saw.
 @(private = "file")
@@ -679,8 +691,9 @@ owned :: proc "contextless" (f: ^Frame, n, at: int) -> bool {
     return true
 }
 
-// Who called into libc when it faulted: the plugin if the first frame past libc's is its own.
-// An abort is called on purpose, so for one any frame of the plugin's over dispatch counts.
+// Who called into libc or the C++ runtime when it faulted: the plugin if the first frame past
+// theirs is its own. An abort is called on purpose, so for one any frame of the plugin's over
+// dispatch counts.
 @(private = "file")
 blamed :: proc "contextless" (f: ^Frame, n, at: int, aborted: bool) -> []u8 {
     if f == nil || at < 0 {
@@ -690,11 +703,39 @@ blamed :: proc "contextless" (f: ^Frame, n, at: int, aborted: bool) -> []u8 {
         if mine(f, o.base) {
             return f.name[:f.n]
         }
-        if o.base == g_kernel || (o.base != g_libc && !aborted) {
+        if o.base == g_kernel || (!runtime_object(o.base) && !aborted) {
             return nil
         }
     }
     return nil
+}
+
+// libc, or the C++ runtime.
+@(private = "file")
+runtime_object :: proc "contextless" (base: uintptr) -> bool {
+    if base == g_libc {
+        return true
+    }
+    for r in g_runtime[:intrinsics.atomic_load(&g_nruntime)] {
+        if base == r {
+            return true
+        }
+    }
+    return false
+}
+
+// Records the C++ runtime a plugin links, by where its own lookup finds the runtime's symbols.
+// The main thread only.
+fault_runtime :: proc(lib: rawptr, plugin: uintptr) {
+    for sym in ([]cstring{"__cxa_throw", "_Unwind_RaiseException"}) {
+        base := fault_object_base(posix.dlsym(posix.Symbol_Table(lib), sym))
+        n := intrinsics.atomic_load(&g_nruntime)
+        if base == 0 || base == plugin || base == g_libc || n == RUNTIME_MAX || runtime_object(base) {
+            continue
+        }
+        g_runtime[n] = base
+        intrinsics.atomic_store(&g_nruntime, n + 1)
+    }
 }
 
 // The first frame from `at` that is not libc's; n for none.

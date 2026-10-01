@@ -411,13 +411,12 @@ exit_test :: proc(t: ^testing.T) {
     crash(t, "exit", "dtorboom", .SIGSEGV, exit = true)
 }
 
-// Runs `cmd` in a child, this test binary again with only crash_child selected, and expects it
-// to die of `sig`, with cplug quarantined when `blamed`. With `exit`, the child destroys its
-// kernel and exits after the command.
-@(private = "file")
-crash :: proc(t: ^testing.T, name, cmd: string, sig: posix.Signal, blamed := true, exit := false) {
+// Runs `cmd` of `plug` in a child, this test binary again with only crash_child selected, and
+// expects it to die of `sig`, with `plug` quarantined when `blamed`. With `exit`, the child
+// destroys its kernel and exits after the command.
+crash :: proc(t: ^testing.T, name, cmd: string, sig: posix.Signal, blamed := true, exit := false, plug := "cplug") {
     sync.guard(&state_lock)
-    data, staged := stage(t, name, "cplug", "grammar")
+    data, staged := stage(t, name, plug, "grammar")
     if !staged {
         return
     }
@@ -425,6 +424,7 @@ crash :: proc(t: ^testing.T, name, cmd: string, sig: posix.Signal, blamed := tru
         command = {"/proc/self/exe", "-tests:crash_child"}, // args[0] may not be a path
         env     = {
             fmt.tprintf("%s=%s", CRASH_ENV, data),
+            fmt.tprintf("%s=%s", CRASH_PLUG_ENV, plug),
             fmt.tprintf("%s=%s", CRASH_CMD_ENV, cmd),
             fmt.tprintf("%s=%s", CRASH_EXIT_ENV, "1" if exit else ""),
         },
@@ -433,7 +433,7 @@ crash :: proc(t: ^testing.T, name, cmd: string, sig: posix.Signal, blamed := tru
                     "the child did not die of %v: %v %v %s", sig, err, state, errs)
     file, _ := filepath.join({data, lues.QUARANTINE_FILE}, context.temp_allocator)
     raw, _ := os.read_entire_file(file, context.temp_allocator)
-    testing.expect_value(t, string(raw), "cplug\n" if blamed else "")
+    testing.expect_value(t, string(raw), fmt.tprintf("%s\n", plug) if blamed else "")
 }
 
 @(private = "file")
@@ -444,6 +444,9 @@ CRASH_CMD_ENV :: "LUES_CRASH_CMD"
 
 @(private = "file")
 CRASH_EXIT_ENV :: "LUES_CRASH_EXIT"
+
+@(private = "file")
+CRASH_PLUG_ENV :: "LUES_CRASH_PLUG"
 
 // A no-op unless crash runs it.
 @(test)
@@ -457,7 +460,7 @@ crash_child :: proc(t: ^testing.T) {
     box: Api_Box
     testing.expect(t, test_host(&k, &box, {home = {data = data, state = data}}))
     k.hooks.say, k.user = heard, &said
-    testing.expect(t, lues.loader_load(&k, lues.loader_path(&k, "cplug")))
+    testing.expect(t, lues.loader_load(&k, lues.loader_path(&k, os.get_env(CRASH_PLUG_ENV, context.temp_allocator))))
     lues.fault_watchdog_start(200) // a child's own process: no other test to trip
     id := docs.store_open(&k.store)
     // Every command gets the grammar's path; only scan reads it.
