@@ -1,5 +1,6 @@
 package lues
 
+import "base:intrinsics"
 import "core:dynlib"
 import "core:fmt"
 import "core:os"
@@ -119,6 +120,19 @@ loader_faulted :: proc(k: ^Kernel, i: int, why: string, traced := false) {
     unload(k, i)
     trace := fmt.tprintf("; trace in %s", fault_trace_path(k)) if traced else ""
     say(k, fmt.tprintf("%s %s, and is unloaded%s", k.plugs[i].name, why, trace))
+}
+
+// Unloads a plugin whose own thread faulted. The main thread only.
+loader_reap :: proc(k: ^Kernel) {
+    context = k.ctx
+    v := intrinsics.atomic_exchange(&k.lost, 0)
+    if v == 0 {
+        return
+    }
+    i, gen := unpack(v)
+    if int(i) < len(k.plugs) && k.plugs[i].gen == gen {
+        loader_faulted(k, int(i), "faulted on a thread of its own", k.traces != nil)
+    }
 }
 
 // In name order. Quarantined plugins are held back; loader_load lifts a quarantine.
@@ -317,7 +331,7 @@ unload :: proc(k: ^Kernel, i: int) {
         }
     }
     clear(&p.ledger)
-    // (hole thread-reap :tags (fault loader) :sev missing-system :needs plugin-threads) threads a plugin started outlive it: they run on after a fault and crash after dlclose.
+    // (hole thread-reap :tags (fault loader) :sev missing-system) threads a plugin started outlive it: they run on after a fault and crash after dlclose.
     // (hole plugin-arenas :tags (memory abi) :sev missing-system) no arena per plugin; what a faulted plugin allocated leaks.
     if p.state == .Live {
         dynlib.unload_library(p.lib)

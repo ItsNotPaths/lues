@@ -42,6 +42,10 @@ Call :: struct {
 // `ok = false`, so nothing it returns is kept.
 dispatch :: proc(k: ^Kernel, i: int, c: Call) -> (r: Ret, ok: bool) {
     context = k.ctx
+    loader_reap(k)
+    if k.plugs[i].state != .Live {
+        return {}, false
+    }
     if c.what != .App {
         k.ran += 1
     }
@@ -61,6 +65,7 @@ dispatch :: proc(k: ^Kernel, i: int, c: Call) -> (r: Ret, ok: bool) {
     fault_arm(k, i, rawptr(c.app))
     r = run(k, i, c)
     fault_disarm()
+    loader_reap(k)
     if fault_kept(k, i) {
         say(k, fmt.tprintf("%s replaced a fault handler; lues's is back, and the plugin's runs after it", k.plugs[i].name))
     }

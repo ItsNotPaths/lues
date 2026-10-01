@@ -158,7 +158,7 @@ static int32_t fail(const lues_api *api, lues_self self, const lues_at *at, cons
     return 0; /* gcc drops noreturn on a pointer */
 }
 
-/* fail from a thread of the plugin's own: no net there, so the process dies. */
+/* fail from a thread of the plugin's own: the thread ends, and the plugin is unloaded. */
 static const lues_api *FAIL_API;
 static lues_self       FAIL_SELF;
 
@@ -166,6 +166,24 @@ static void *fail_thread(void *arg) {
     (void)arg;
     FAIL_API->fail(FAIL_API, FAIL_SELF, LIT("off the dispatch thread"));
     return NULL;
+}
+
+static void *boom_thread(void *arg) {
+    (void)arg;
+    *NOWHERE = 1;
+    return NULL;
+}
+
+/* Faults on a thread of its own, then waits for it. */
+static int32_t threadboom(const lues_api *api, lues_self self, const lues_at *at,
+                          const char *args, size_t args_len) {
+    pthread_t t;
+    (void)api, (void)self, (void)at, (void)args, (void)args_len;
+    if (pthread_create(&t, NULL, boom_thread, NULL) != 0) {
+        return 1;
+    }
+    pthread_join(t, NULL);
+    return 0;
 }
 
 static int32_t failoff(const lues_api *api, lues_self self, const lues_at *at, const char *args,
@@ -511,6 +529,7 @@ LUES_MAIN {
     api->register_command(api, self, LIT("hang"), LIT("stop returning"), hang);
     api->register_command(api, self, LIT("sortboom"), LIT("fault under qsort"), sortboom);
     api->register_command(api, self, LIT("strboom"), LIT("fault in strlen"), strboom);
+    api->register_command(api, self, LIT("threadboom"), LIT("fault on a thread"), threadboom);
     api->register_command(api, self, LIT("catch"), LIT("catch a grammar fault itself"), catch_cmd);
     api->register_command(api, self, LIT("sigign"), LIT("ignore SIGSEGV through signal"), sigign);
     api->register_command(api, self, LIT("rawsig"), LIT("ignore SIGSEGV by syscall"), rawsig);

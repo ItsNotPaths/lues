@@ -305,10 +305,27 @@ fail_test :: proc(t: ^testing.T) {
     testing.expect(t, run(&k, "hello"))
 }
 
-// fail with no net on its thread cannot unwind: the process dies and the plugin is quarantined.
+// A fault, or fail, on a thread the plugin started ends that thread and unloads the plugin.
 @(test)
-fail_thread_test :: proc(t: ^testing.T) {
-    crash(t, "fail-thread", "failoff", .SIGABRT)
+thread_test :: proc(t: ^testing.T) {
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Api_Box
+    defer lues.kernel_destroy(&k)
+    i, ok := plug_host(t, &k, &box, &said, "thread")
+    if !ok {
+        return
+    }
+
+    for cmd in ([]string{"threadboom", "failoff"}) {
+        strings.builder_reset(&said)
+        testing.expect(t, !run(&k, cmd), cmd)
+        testing.expect_value(t, k.plugs[i].state, lues.Plug_State.Faulted)
+        testing.expect(t, strings.contains(strings.to_string(said), "cplug faulted on a thread of its own"), strings.to_string(said))
+        testing.expect(t, !lues.quarantined(&k, "cplug"))
+        testing.expect(t, lues.loader_load(&k, lues.loader_path(&k, "cplug")), strings.to_string(said))
+    }
+    testing.expect(t, run(&k, "hello"))
 }
 
 // Runs `cmd` in a child, this test binary again with only crash_child selected, and expects it

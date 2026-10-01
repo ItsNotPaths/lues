@@ -71,6 +71,8 @@ Kernel :: struct {
     // Bumped per plugin call but .App: plugins keep view state in their own memory, so cached
     // views key on this.
     ran:         u64,
+    // A fault on a plugin's own thread, posted for the main thread: pack(slot, gen); 0 for none.
+    lost:        u64,
 }
 
 // k must not move after this. The hang watchdog is the caller's to start.
@@ -147,6 +149,7 @@ kernel_destroy :: proc(k: ^Kernel) {
 kernel_frame :: proc(k: ^Kernel) -> (latched: bool) {
     context = k.ctx
     free_all(context.temp_allocator)
+    loader_reap(k)
     kernel_settle(k)
     io_pump(k)
     return pump_insts(k) | pump_watch(k)

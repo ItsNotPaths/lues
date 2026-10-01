@@ -55,6 +55,7 @@ Frame :: struct {
     ctx:      runtime.Context, // the arming frame's, so recovery can allocate
     app:      ^Kernel,
     who:      int,
+    gen:      u32,
     base:     uintptr,
     via:      rawptr, // .App's trampoline: the app's frame sits under the plugin's
     // The plugin's adopted objects, copied at arm time: the handler cannot follow its array.
@@ -218,16 +219,28 @@ fault_env :: proc() -> ^Jmp_Buf {
 // Call after the sigsetjmp that fills the buffer. Pushes the frame.
 fault_arm :: proc(a: ^Kernel, i: int, via: rawptr = nil) {
     p := &a.plugs[i]
-    g := &g_guard
-    d := intrinsics.atomic_load(&g.depth)
-    f := &g.frames[d]
-    f.ctx, f.app, f.who, f.base, f.via = context, a, i, p.base, via
+    f := next()
+    f.app, f.who, f.gen, f.base, f.via = a, i, p.gen, p.base, via
     f.nobjects = copy(f.objects[:], p.objects[:])
     f.n = put_name(f.name[:], p.name)
+    push(f)
+}
+
+// The frame the next arm fills.
+@(private = "file")
+next :: proc "contextless" () -> ^Frame {
+    return &g_guard.frames[intrinsics.atomic_load(&g_guard.depth)]
+}
+
+// Only once f is filled: a signal from here on sees it.
+@(private = "file")
+push :: proc(f: ^Frame) {
+    g := &g_guard
+    f.ctx = context
     intrinsics.atomic_store(&f.busy, false)
     g.why, g.traced = "", false
     watch_push(f)
-    intrinsics.atomic_store(&g.depth, d + 1)
+    intrinsics.atomic_store(&g.depth, intrinsics.atomic_load(&g.depth) + 1)
 }
 
 // An object adopted during the call counts at once, in every frame of the plugin, not from
@@ -321,12 +334,81 @@ put_name :: proc "contextless" (buf: []u8, name: string) -> int {
     return n + 1
 }
 
+// --- plugin threads ---
+//
+// A thread that plugin code starts runs under a copy of the frame that started it, so a fault on
+// it is judged and unwound the same way, and the thread never reads the plugin table, which the
+// main thread may be moving. Unloading is the main thread's: the thread posts the fault in
+// Kernel.lost and ends, and loader_reap unloads the plugin. No watchdog watches it.
+
+@(private = "file")
+Thread_Start :: struct {
+    fn:     proc "c" (arg: rawptr) -> rawptr,
+    arg:    rawptr,
+    parent: Frame,
+}
+
+// The arg for fault_thread_main; nil when no plugin code runs on this thread.
+fault_thread :: proc "contextless" (fn: proc "c" (arg: rawptr) -> rawptr, arg: rawptr) -> rawptr {
+    f := top()
+    if f == nil || intrinsics.atomic_load(&f.busy) {
+        return nil
+    }
+    context = runtime.default_context()
+    s := new(Thread_Start, f.ctx.allocator)
+    if s != nil {
+        s^ = {fn = fn, arg = arg, parent = f^}
+    }
+    return s
+}
+
+// The thread never started.
+fault_thread_drop :: proc "contextless" (arg: rawptr) {
+    s := (^Thread_Start)(arg)
+    context = runtime.default_context()
+    free(s, s.parent.ctx.allocator)
+}
+
+fault_thread_main :: proc "c" (arg: rawptr) -> rawptr {
+    s := (^Thread_Start)(arg)
+    context = runtime.default_context()
+    context.allocator = s.parent.ctx.allocator
+    start := s^
+    free(s)
+    fault_install() // this thread's alt stack
+    if sigsetjmp(fault_env(), 1) != 0 {
+        post()
+        return nil
+    }
+    p := &start.parent
+    f := next()
+    f.app, f.who, f.gen, f.base, f.via = p.app, p.who, p.gen, p.base, nil
+    f.objects, f.nobjects, f.name, f.n = p.objects, p.nobjects, p.name, p.n
+    push(f)
+    ret := start.fn(start.arg)
+    fault_disarm()
+    return ret
+}
+
+// Posts the frame unwind popped. A second plugin's post waits for the first to be reaped.
+@(private = "file")
+post :: proc "contextless" () {
+    f := &g_guard.frames[intrinsics.atomic_load(&g_guard.depth)]
+    v := pack(u32(f.who), f.gen)
+    for {
+        if _, ok := intrinsics.atomic_compare_exchange_strong(&f.app.lost, 0, v); ok {
+            return
+        }
+        wait := posix.timespec{tv_nsec = 1e6}
+        posix.nanosleep(&wait, nil)
+    }
+}
+
 // --- the handlers ---
 //
 // Async-signal-safe: no allocation, no lock, no fmt. dladdr is the one exception.
 
 // (hole leaf-libc-faults :tags fault :sev missing-system) no table of libc's lock-free leaves from its debug symbols, so a fault in memcpy or strlen the plugin called is not unwound.
-// (hole plugin-threads :tags fault :sev missing-system) a thread a plugin started has no frame, so a fault on it dies unblamed.
 @(private = "file")
 fault_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr) {
     pc := fault_ip(uc)
