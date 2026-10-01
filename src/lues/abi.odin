@@ -3,8 +3,8 @@ package lues
 import "core:c"
 import "../docs"
 
-// (hole abi-codegen :tags (abi) :sev missing-system) lues.h and rustplug's sys module are kept in step with this file by hand; nothing generates them or checks they agree.
-// include/lues.h mirrors this.
+// include/lues.h and tests/rustplug/src/sys.rs mirror this, by hand. tests/abi_test.odin
+// fails when a field's name or offset differs.
 
 API :: 4 // 2: fail. 3: adopt. 4: call, hooks, advice, doc-vars
 
