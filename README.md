@@ -45,6 +45,7 @@ The threat model is buggy plugins, not neccesarily hostile ones.
 - Plugin threads run under the same rules. Unload stops them.
 - Kernel memory is write-protected with a pkey while plugin code runs. A stray write faults
   at once, and the plugin is blamed.
+- With `Spec.unguarded` there is no net: a fault kills the process, for a debugger or ASan.
 - A fault in a place where an unwind is not safe kills the process. The plugin is blamed and
   quarantined, so the next start does not load it.
 

@@ -428,25 +428,38 @@ exit_test :: proc(t: ^testing.T) {
     crash(t, "exit", "dtorboom", .SIGSEGV, exit = true)
 }
 
+// Unguarded, a fault in plugin code kills the process, and nothing is quarantined.
+@(test)
+unguarded_test :: proc(t: ^testing.T) {
+    crash(t, "unguarded", "boom", .SIGSEGV, blamed = false, unguarded = true)
+}
+
 // Runs `cmd` of `plug` in a child, this test binary again with only crash_child selected, and
 // expects it to die of `sig`, with `plug` quarantined when `blamed`. With `exit`, the child
-// destroys its kernel and exits after the command.
-crash :: proc(t: ^testing.T, name, cmd: string, sig: posix.Signal, blamed := true, exit := false, plug := "cplug") {
+// destroys its kernel and exits after the command. With `unguarded`, its kernel has no net.
+crash :: proc(t: ^testing.T, name, cmd: string, sig: posix.Signal, blamed := true, exit := false,
+              plug := "cplug", unguarded := false) {
     sync.guard(&state_lock)
     data, staged := stage(t, name, plug, "grammar")
     if !staged {
         return
     }
-    state, _, errs, err := os.process_exec({
+    state, outs, errs, err := os.process_exec({
         command = {"/proc/self/exe", "-tests:crash_child"}, // args[0] may not be a path
         env     = {
             fmt.tprintf("%s=%s", CRASH_ENV, data),
             fmt.tprintf("%s=%s", CRASH_PLUG_ENV, plug),
             fmt.tprintf("%s=%s", CRASH_CMD_ENV, cmd),
             fmt.tprintf("%s=%s", CRASH_EXIT_ENV, "1" if exit else ""),
+            fmt.tprintf("%s=%s", CRASH_UNGUARDED_ENV, "1" if unguarded else ""),
         },
     }, context.temp_allocator)
-    testing.expectf(t, err == nil && !state.success && state.exit_code == int(sig),
+    // Unguarded, the test runner's own handler reports it and exits 1.
+    died := state.exit_code == int(sig)
+    if unguarded {
+        died = strings.contains(string(outs), "Signal caught") || strings.contains(string(errs), "Signal caught")
+    }
+    testing.expectf(t, err == nil && !state.success && died,
                     "the child did not die of %v: %v %v %s", sig, err, state, errs)
     file, _ := filepath.join({data, lues.QUARANTINE_FILE}, context.temp_allocator)
     raw, _ := os.read_entire_file(file, context.temp_allocator)
@@ -465,6 +478,9 @@ CRASH_EXIT_ENV :: "LUES_CRASH_EXIT"
 @(private = "file")
 CRASH_PLUG_ENV :: "LUES_CRASH_PLUG"
 
+@(private = "file")
+CRASH_UNGUARDED_ENV :: "LUES_CRASH_UNGUARDED"
+
 // A no-op unless crash runs it.
 @(test)
 crash_child :: proc(t: ^testing.T) {
@@ -475,7 +491,8 @@ crash_child :: proc(t: ^testing.T) {
     said := strings.builder_make(context.temp_allocator)
     k: lues.Kernel
     box: Api_Box
-    testing.expect(t, test_host(&k, &box, {home = {data = data, state = data}}))
+    unguarded := os.get_env(CRASH_UNGUARDED_ENV, context.temp_allocator) != ""
+    testing.expect(t, test_host(&k, &box, {home = {data = data, state = data}, unguarded = unguarded}))
     k.hooks.say, k.user = heard, &said
     testing.expect(t, lues.loader_load(&k, lues.loader_path(&k, os.get_env(CRASH_PLUG_ENV, context.temp_allocator))))
     lues.fault_watchdog_start(200) // a child's own process: no other test to trip

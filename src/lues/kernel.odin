@@ -46,6 +46,8 @@ Spec :: struct {
     hooks: Hooks,
     api:   ^Api, // inside a Box
     user:  rawptr,
+    // No fault net: a plugin fault kills the process, for a debugger or ASan.
+    unguarded: bool,
 }
 
 Kernel :: struct {
@@ -114,7 +116,7 @@ kernel_init :: proc(k: ^Kernel, spec: Spec) -> bool {
     api_init(k)
     quarantine_open(k)
     fault_trace_open(k)
-    return fault_install()
+    return k.unguarded || fault_install()
 }
 
 // Io first: a plugin's close must not see a completion arrive. What the kernel leaked is

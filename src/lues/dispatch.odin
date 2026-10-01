@@ -49,7 +49,7 @@ dispatch :: proc(k: ^Kernel, i: int, c: Call) -> (r: Ret, ok: bool) {
     if c.what != .App {
         k.ran += 1
     }
-    if !fault_ready() {
+    if k.unguarded || !fault_ready() {
         r = run(k, i, c)
         return r, intact(k, i)
     }
