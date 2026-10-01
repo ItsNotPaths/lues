@@ -95,7 +95,7 @@ api_register_kind :: proc "c" (api: ^Api, self: Self, spec: ^Kind_Spec) -> Kind 
         }
     }
     append(&k.kinds, Plug_Kind{strings.clone(name), ctx, i, spec.vt})
-    append(&k.plugs[i].ledger, Record{what = .Kind, idx = len(k.kinds) - 1})
+    record(k, i, {what = .Kind, idx = len(k.kinds) - 1})
     return Kind(int(k.kind_base) + len(k.kinds))
 }
 
@@ -117,7 +117,7 @@ api_register_command :: proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: 
         return
     }
     append(&k.cmds, Plug_Cmd{strings.clone(n), strings.clone(string(doc[:doc_len])), i, fn})
-    append(&k.plugs[i].ledger, Record{what = .Command, idx = len(k.cmds) - 1})
+    record(k, i, {what = .Command, idx = len(k.cmds) - 1})
 }
 
 @(private = "file")
@@ -131,7 +131,7 @@ api_request_bind :: proc "c" (api: ^Api, self: Self, ctx: [^]u8, ctx_len: uint,
     context = k.ctx
     if bind_request(k, k.plugs[i].name, string(ctx[:ctx_len]), string(chord[:chord_len]),
                     string(line[:line_len])) {
-        append(&k.plugs[i].ledger, Record{what = .Bind, idx = len(k.reqs) - 1})
+        record(k, i, {what = .Bind, idx = len(k.reqs) - 1})
     }
 }
 
@@ -146,7 +146,7 @@ api_request_config :: proc "c" (api: ^Api, self: Self, section: [^]u8, section_l
     context = k.ctx
     if config_request(k, k.plugs[i].name, string(section[:section_len]), string(key[:key_len]),
                       string(value[:value_len])) {
-        append(&k.plugs[i].ledger, Record{what = .Config, idx = len(k.creqs) - 1})
+        record(k, i, {what = .Config, idx = len(k.creqs) - 1})
     }
 }
 
@@ -172,7 +172,7 @@ api_register_watch :: proc "c" (api: ^Api, self: Self, fn: Event_Fn) {
     context = k.ctx
     p := &k.plugs[i]
     if p.watch == nil {
-        append(&p.ledger, Record{what = .Watch})
+        record(k, i, {what = .Watch})
     }
     p.watch = fn
     clear(&p.seen)

@@ -78,6 +78,37 @@ open_fault_test :: proc(t: ^testing.T) {
     testing.expect_value(t, lues.loader_find(&k, "cplug"), -1)
 }
 
+// What an open registers goes when its doc closes, and the plugin stays.
+@(test)
+scope_test :: proc(t: ^testing.T) {
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Api_Box
+    defer lues.kernel_destroy(&k)
+    i, ok := plug_host(t, &k, &box, &said, "scope")
+    if !ok {
+        return
+    }
+    kind, _ := lues.kind_named(&k, "note")
+    plain, _ := lues.inst_open(&k, kind, "hi")
+    id, opened := lues.inst_open(&k, kind, "scoped")
+    if !testing.expect(t, opened, strings.to_string(said)) {
+        return
+    }
+    testing.expect(t, run(&k, "scoped", nil, "0"))
+
+    lues.doc_close(&k, plain)
+    testing.expect(t, run(&k, "scoped", nil, "0"), "another doc's close took it")
+    lues.doc_close(&k, id)
+    _, still := lues.cmd_named(&k, "scoped")
+    testing.expect(t, !still, "the closed doc's command is still registered")
+    testing.expect(t, run(&k, "hello", nil, "0"))
+    testing.expect_value(t, lues.loader_find(&k, "cplug"), i)
+
+    _, opened = lues.inst_open(&k, kind, "scoped")
+    testing.expect(t, opened && run(&k, "scoped", nil, "0"), "a second open could not register it again")
+}
+
 // A watcher hears every doc once, then only what moved, then what it latched on.
 @(test)
 watch_test :: proc(t: ^testing.T) {

@@ -28,7 +28,7 @@ Hooks :: struct {
     doc_close:  proc(k: ^Kernel, id: docs.Id),
     kind_ctx:   proc(k: ^Kernel, name: string) -> (ctx: u32, ok: bool),
     unregister: proc(k: ^Kernel, r: Record),
-    // A plugin loaded or unloaded.
+    // A plugin loaded or unloaded, or a closed doc took back what its open registered.
     changed:    proc(k: ^Kernel),
     bind_held:  Bind_Held,
 }
@@ -73,6 +73,11 @@ Kernel :: struct {
     ran:         u64,
     // A fault on a plugin's own thread, posted for the main thread: pack(slot, gen); 0 for none.
     lost:        u64,
+    // The open in progress: what its plugin registers is scoped to the doc.
+    opening:     struct {
+        owner: int,
+        doc:   Maybe(docs.Id),
+    },
 }
 
 // k must not move after this. The hang watchdog is the caller's to start.

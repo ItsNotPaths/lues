@@ -51,15 +51,41 @@ Record_Kind :: enum u8 {
 }
 
 Record :: struct {
-    what: Record_Kind,
-    idx:  int,
-    tag:  u32, // .App only: the app's record kind
+    what:  Record_Kind,
+    idx:   int,
+    tag:   u32, // .App only: the app's record kind
+    scope: Maybe(docs.Id), // the instance whose open added it; closing that doc reverts it
 }
 
-// For app api arms. Unload hands the record to hooks.unregister.
+// For app api arms. Reverting hands the record to hooks.unregister.
 ledger_add :: proc(k: ^Kernel, i: int, tag: u32, idx: int) {
+    record(k, i, {what = .App, idx = idx, tag = tag})
+}
+
+record :: proc(k: ^Kernel, i: int, r: Record) {
     context = k.ctx
-    append(&k.plugs[i].ledger, Record{what = .App, idx = idx, tag = tag})
+    r := r
+    if k.opening.owner == i {
+        r.scope = k.opening.doc
+    }
+    append(&k.plugs[i].ledger, r)
+}
+
+// What instance `id`'s open added, newest first.
+scope_revert :: proc(k: ^Kernel, i: int, id: docs.Id) {
+    context = k.ctx
+    p := &k.plugs[i]
+    reverted := false
+    #reverse for r, j in p.ledger {
+        if doc, scoped := r.scope.?; scoped && doc == id {
+            revert(k, p, r)
+            ordered_remove(&p.ledger, j)
+            reverted = true
+        }
+    }
+    if reverted {
+        changed(k)
+    }
 }
 
 loader_load :: proc(k: ^Kernel, path: string) -> bool {
@@ -310,29 +336,7 @@ unload :: proc(k: ^Kernel, i: int) {
     }
     p := &k.plugs[i]
     #reverse for r in p.ledger {
-        switch r.what {
-        case .Kind:
-            kd := &k.kinds[r.idx]
-            delete(kd.name)
-            kd^ = {owner = -1}
-        case .Command:
-            c := &k.cmds[r.idx]
-            delete(c.name)
-            delete(c.doc)
-            c^ = {owner = -1}
-        case .Bind:
-            k.reqs[r.idx].dead = true // the row in the file stays
-        case .Config:
-            k.creqs[r.idx].dead = true
-        case .Watch:
-            p.watch = nil
-            clear(&p.seen)
-        case .App:
-            if k.hooks.unregister != nil {
-                context = k.host
-                k.hooks.unregister(k, r)
-            }
-        }
+        revert(k, p, r)
     }
     clear(&p.ledger)
     // (hole plugin-arenas :tags (memory abi) :sev missing-system) no arena per plugin; what a faulted plugin allocated leaks.
@@ -351,4 +355,31 @@ unload :: proc(k: ^Kernel, i: int) {
     p.copy = nil // a faulted plugin's stays open with its mapping
     p.lib = nil
     changed(k)
+}
+
+@(private = "file")
+revert :: proc(k: ^Kernel, p: ^Plugin, r: Record) {
+    switch r.what {
+    case .Kind:
+        kd := &k.kinds[r.idx]
+        delete(kd.name)
+        kd^ = {owner = -1}
+    case .Command:
+        c := &k.cmds[r.idx]
+        delete(c.name)
+        delete(c.doc)
+        c^ = {owner = -1}
+    case .Bind:
+        k.reqs[r.idx].dead = true // the row in the file stays
+    case .Config:
+        k.creqs[r.idx].dead = true
+    case .Watch:
+        p.watch = nil
+        clear(&p.seen)
+    case .App:
+        if k.hooks.unregister != nil {
+            context = k.host
+            k.hooks.unregister(k, r)
+        }
+    }
 }

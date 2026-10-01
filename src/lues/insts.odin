@@ -39,7 +39,10 @@ inst_open :: proc(k: ^Kernel, kind: Kind, args := "") -> (id: docs.Id, ok: bool)
     } else {
         id = docs.store_open(&k.store)
     }
+    outer := k.opening
+    k.opening = {kd.owner, id}
     r, ran := dispatch(k, kd.owner, {what = .Open, vt = kd.vt, doc = doc_handle(id), data = transmute([]u8)args})
+    k.opening = outer
     if !ran {
         doc_close(k, id)
         return {}, false
@@ -74,6 +77,7 @@ inst_close :: proc(k: ^Kernel, id: docs.Id) {
     if k.plugs[inst.owner].state == .Live && ok && kd.vt.close != nil {
         _, _ = dispatch(k, inst.owner, {what = .Close, vt = kd.vt, doc = doc_handle(id), inst = inst.inst})
     }
+    scope_revert(k, inst.owner, id)
 }
 
 // False: nothing took it. What it submits lands before this returns, so two events in one

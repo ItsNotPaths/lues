@@ -484,8 +484,8 @@ static int32_t count(const lues_api *api, lues_self self, const lues_at *at, con
     return 0;
 }
 
-/* The `note` kind: open fills the doc with its args (`boom` faults), text appends, moved is
- * counted. */
+/* The `note` kind: open fills the doc with its args (`boom` faults, `scoped` also registers
+ * :scoped), text appends, moved is counted. */
 static int MOVED, WATCHED, OPEN; /* &OPEN is the instance pointer */
 
 static void *note_open(const lues_api *api, lues_self self, lues_doc doc, const char *args,
@@ -494,6 +494,9 @@ static void *note_open(const lues_api *api, lues_self self, lues_doc doc, const 
     lues_edit            e = {sizeof(lues_edit), 0, 0, args, args_len, 0, {0}};
     if (args_len == 4 && memcmp(args, "boom", 4) == 0) {
         *NOWHERE = 1;
+    }
+    if (args_len == 6 && memcmp(args, "scoped", 6) == 0) {
+        api->register_command(api, self, LIT("scoped"), LIT("lives as long as its doc"), hello);
     }
     s = api->snapshot(api, self, doc);
     api->submit(api, self, doc, s->gen, &e, 1, NULL, 0);
