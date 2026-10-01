@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define LUES_API 4
+#define LUES_API 5
 
 #define LUES_EXPORT __attribute__((visibility("default")))
 
@@ -128,7 +128,8 @@ typedef struct {
     char        _pad[4];
 } lues_edit;
 
-/* Channels not in `set` come from the layer below. `attrs` are the app's bits. */
+/* Channels not in `set` come from the layer below. `attrs` are the app's bits. A run with a
+ * `key` is DATA, not a look: the app reads it by name, and tok, attrs and set are ignored. */
 #define LUES_CHAN_FG    (1u << 0)
 #define LUES_CHAN_BG    (1u << 1)
 #define LUES_CHAN_ATTRS (1u << 2)
@@ -140,6 +141,12 @@ typedef struct {
     uint8_t    attrs;
     uint8_t    set; /* LUES_CHAN_* */
     char       _pad[4];
+    /* LUES_API 5. */
+    lues_token  key;  /* an interned name; 0 is a look */
+    uint8_t     open; /* text typed at lo joins the run, as it always does at hi */
+    char        _pad2[5];
+    const char *text; /* NULL: the run's own bytes are its value */
+    size_t      text_len;
 } lues_span;
 
 /* Replaces your runs in [lo, hi). */
@@ -263,7 +270,7 @@ LUES_SIZE(lues_seg, 32);
 LUES_SIZE(lues_snapshot, 104);
 LUES_SIZE(lues_at, 40);
 LUES_SIZE(lues_edit, 48);
-LUES_SIZE(lues_span, 32);
+LUES_SIZE(lues_span, 56);
 LUES_SIZE(lues_span_pub, 40);
 LUES_SIZE(lues_kind_vt, 24);
 LUES_SIZE(lues_kind_spec, 64);

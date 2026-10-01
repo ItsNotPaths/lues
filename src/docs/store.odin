@@ -2,6 +2,7 @@ package docs
 
 import "base:runtime"
 import "core:slice"
+import "core:strings"
 import "../pt"
 
 // Writes queue and store_drain applies them, so gen moves at one place.
@@ -48,7 +49,8 @@ store_destroy :: proc(s: ^Store, land: Land, user: rawptr) {
             doc_destroy(slot.doc)
             free(slot.doc)
         }
-        for b in slot.spans {
+        for &b in slot.spans {
+            bucket_clear(&b)
             delete(b.list)
         }
         delete(slot.spans)
@@ -86,7 +88,8 @@ store_close :: proc(s: ^Store, id: Id) -> bool {
     slot := store_resolve(s, id) or_return
     doc_destroy(slot.doc)
     free(slot.doc)
-    for b in slot.spans {
+    for &b in slot.spans {
+        bucket_clear(&b)
         delete(b.list)
     }
     clear(&slot.spans)
@@ -146,6 +149,9 @@ store_submit :: proc(s: ^Store, id: Id, gen: u64, splices: []Splice, spans: Mayb
     kept := spans
     if pub, publishing := spans.?; publishing {
         pub.list = slice.clone(pub.list)
+        for &run in pub.list {
+            run.text = strings.clone(run.text) if run.text != "" else ""
+        }
         kept = pub
     }
     s.tag += 1
@@ -204,6 +210,9 @@ txn_destroy :: proc(t: Txn, land: Land, user: rawptr, landed: bool) {
     }
     delete(t.splices)
     if pub, publishing := t.spans.?; publishing {
+        for run in pub.list {
+            delete(run.text)
+        }
         delete(pub.list)
     }
     if t.side != nil && land != nil {

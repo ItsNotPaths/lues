@@ -441,7 +441,7 @@ static int32_t paint(const lues_api *api, lues_self self, const lues_at *at, con
     if (at->snap == NULL) {
         return 1;
     }
-    sp = (lues_span){sizeof(lues_span), 0, at->snap->size, 3, 0, LUES_CHAN_FG, {0}};
+    sp = (lues_span){.size = sizeof(lues_span), .hi = at->snap->size, .tok = 3, .set = LUES_CHAN_FG};
     pub = (lues_span_pub){sizeof(lues_span_pub), 0, at->snap->size, &sp, 1};
     api->submit(api, self, at->doc, at->snap->gen, NULL, 0, &pub, 0);
     return 0;

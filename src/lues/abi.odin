@@ -66,7 +66,7 @@ has :: proc "contextless" (size: c.size_t, end: uintptr) -> bool {
 
 // A plugin array strides by its first element's `size`. Every API 1 field is required; a field
 // appended later is read only where has() says it exists. ok = false when the stride is short.
-stride :: proc($T: typeid, base: rawptr, n: int) -> (step: uintptr, ok: bool) {
+stride :: proc($T: typeid, base: rawptr, n: int, least := size_of(T)) -> (step: uintptr, ok: bool) {
     if n == 0 {
         return 0, true
     }
@@ -74,7 +74,7 @@ stride :: proc($T: typeid, base: rawptr, n: int) -> (step: uintptr, ok: bool) {
         return 0, false
     }
     size := (^c.size_t)(base)^
-    return uintptr(size), has(size, size_of(T))
+    return uintptr(size), has(size, uintptr(least))
 }
 
 elem :: proc($T: typeid, base: rawptr, step: uintptr, i: int) -> ^T {

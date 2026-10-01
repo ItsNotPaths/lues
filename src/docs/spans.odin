@@ -1,11 +1,16 @@
 package docs
 
 import "core:slice"
+import "core:strings"
 import "../pt"
 
-// Runs are flat, sorted and non-overlapping within a bucket, and move with the bytes.
+// A bucket is sorted by `lo`; its runs of one key are flat and do not overlap. Runs move with
+// the bytes.
 
 Producer :: distinct u16
+
+// 0 is a look. Any other key is a name the app interned, and the run is data.
+Key :: distinct u16
 
 Chan :: enum u8 {
     Fg,
@@ -14,12 +19,16 @@ Chan :: enum u8 {
 }
 Chans :: distinct bit_set[Chan; u8]
 
-// `set` says which of fg, bg and attrs this run paints; the rest come from the layer below.
+// `set` says which of fg, bg and attrs a look paints; the rest come from the layer below. A data
+// run paints nothing, and `text` is its value: empty means its own bytes.
 Span_Run :: struct {
     lo, hi: int,
     fg, bg: u32,
     attrs:  u8,
     set:    Chans,
+    key:    Key,
+    open:   bool, // text typed at `lo` joins the run, as it always does at `hi`
+    text:   string, // owned by whoever holds the run
 }
 
 Spans :: struct {
@@ -61,12 +70,18 @@ spans_apply :: proc(slot: ^Slot, pub: Spans) -> bool {
     if len(out) > SPAN_MAX {
         return false
     }
-    clear(&b.list)
+    // Cut pieces share their old run's text, so every text is copied and the old list goes whole.
+    for &run in out {
+        if run.text != "" {
+            run.text = strings.clone(run.text, b.list.allocator)
+        }
+    }
+    bucket_clear(b)
     append(&b.list, ..out[:])
     return true
 }
 
-// Text typed at a boundary joins the run ending there, so touching runs never overlap.
+// Text typed at a boundary joins the run ending there, unless the run starting there is open.
 // A lost log drops every run: wrong colour is worse than none.
 spans_follow :: proc(slot: ^Slot) {
     if slot.doc == nil {
@@ -80,26 +95,21 @@ spans_follow :: proc(slot: ^Slot) {
     defer changes_ack(slot.doc, slot.spans_reader)
     for &b in slot.spans {
         if lost {
-            clear(&b.list)
+            bucket_clear(&b)
             continue
         }
-        kept := 0
-        for sp in b.list {
-            moved := sp
+        for &sp in b.list {
             for ch in changes {
-                moved.lo = off_shift(moved.lo, ch, low = false)
-                moved.hi = off_shift(moved.hi, ch, low = false)
-            }
-            if moved.hi > moved.lo {
-                b.list[kept] = moved
-                kept += 1
+                sp.lo = off_shift(sp.lo, ch, low = sp.open)
+                sp.hi = off_shift(sp.hi, ch, low = false)
             }
         }
-        resize(&b.list, kept)
+        bucket_settle(&b)
     }
 }
 
-// Later in `order` wins per channel. A producer `order` does not name is not read.
+// Later in `order` wins per key, and per channel within a look. A producer `order` does not name
+// is not read. Runs of different keys may overlap; the list is sorted by `lo`.
 spans_read :: proc(s: ^Store, id: Id, lo, hi: int, order: []Producer,
                    alloc := context.temp_allocator) -> []Span_Run {
     context.allocator = pt.kept(&s.alloc)
@@ -116,7 +126,13 @@ spans_read :: proc(s: ^Store, id: Id, lo, hi: int, order: []Producer,
             }
         }
     }
-    return slice.clone(merged, alloc)
+    out := slice.clone(merged, alloc)
+    for &run in out {
+        if run.text != "" {
+            run.text = strings.clone(run.text, alloc)
+        }
+    }
+    return out
 }
 
 spans_forget :: proc(s: ^Store, who: Producer) {
@@ -124,10 +140,18 @@ spans_forget :: proc(s: ^Store, who: Producer) {
     for &slot in s.slots {
         for &b in slot.spans {
             if b.who == who {
-                clear(&b.list)
+                bucket_clear(&b)
             }
         }
     }
+}
+
+// Frees the texts too. The list keeps its memory.
+bucket_clear :: proc(b: ^Bucket) {
+    for run in b.list {
+        delete(run.text, b.list.allocator)
+    }
+    clear(&b.list)
 }
 
 // --- internals ---
@@ -139,25 +163,77 @@ bucket_for :: proc(slot: ^Slot, who: Producer) -> ^Bucket {
             return &b
         }
     }
-    append(&slot.spans, Bucket{who = who})
+    // The texts go where the list goes, whoever's context the first publish ran in.
+    append(&slot.spans, Bucket{who = who, list = make([dynamic]Span_Run)})
     return &slot.spans[len(slot.spans) - 1]
 }
 
-// Plugin input: clipped, sorted, an overlap won by the first start, empty runs dropped.
+// After a follow: text typed between two runs of one key goes to the open one, and what an edit
+// emptied is dropped.
+@(private = "file")
+bucket_settle :: proc(b: ^Bucket) {
+    last := make([dynamic]Key_At, 0, 4, context.temp_allocator)
+    for &sp, i in b.list {
+        if j := key_at(last[:], sp.key); j >= 0 {
+            prev := &b.list[last[j].at]
+            prev.hi = min(prev.hi, sp.lo)
+            last[j].at = i
+        } else {
+            append(&last, Key_At{sp.key, i})
+        }
+    }
+    kept := 0
+    for sp in b.list {
+        if sp.hi > sp.lo {
+            b.list[kept] = sp
+            kept += 1
+        } else {
+            delete(sp.text, b.list.allocator)
+        }
+    }
+    resize(&b.list, kept)
+}
+
+// The last run of each key seen so far. A bucket holds few keys, so a list beats a map.
+@(private = "file")
+Key_At :: struct {
+    key: Key,
+    at:  int,
+}
+
+@(private = "file")
+key_at :: proc(list: []Key_At, key: Key) -> int {
+    for k, i in list {
+        if k.key == key {
+            return i
+        }
+    }
+    return -1
+}
+
+// Plugin input: clipped, sorted, an overlap within one key won by the first start, and a look
+// that paints nothing dropped.
 @(private = "file")
 spans_clean :: proc(list: []Span_Run, lo, hi: int) -> []Span_Run {
     out := make([dynamic]Span_Run, 0, len(list), context.temp_allocator)
     for sp in list {
         a, b := max(sp.lo, lo), min(sp.hi, hi)
-        if a < b && sp.set != {} {
+        if a < b && (sp.set != {} || sp.key != 0) {
             append(&out, span_cut(sp, a, b))
         }
     }
-    slice.sort_by(out[:], proc(x, y: Span_Run) -> bool {return x.lo < y.lo})
+    slice.stable_sort_by(out[:], proc(x, y: Span_Run) -> bool {return x.lo < y.lo})
+    ends := make([dynamic]Key_At, 0, 4, context.temp_allocator) // `at` is the key's last end
     at := 0
     for sp in out {
-        if at > 0 && sp.lo < out[at - 1].hi {
+        j := key_at(ends[:], sp.key)
+        if j >= 0 && sp.lo < ends[j].at {
             continue
+        }
+        if j >= 0 {
+            ends[j].at = sp.hi
+        } else {
+            append(&ends, Key_At{sp.key, sp.hi})
         }
         out[at] = sp
         at += 1
@@ -187,9 +263,49 @@ spans_clip :: proc(list: []Span_Run, lo, hi: int) -> []Span_Run {
     return out[:]
 }
 
-// Top wins per channel per byte; what top leaves unset comes from base.
+// Top wins per key per byte; within a look, per channel, and what top leaves unset comes from
+// base. One key, the usual case, is one pass.
 @(private = "file")
 spans_overlay :: proc(base, top: []Span_Run) -> []Span_Run {
+    if len(top) == 0 {
+        return base
+    }
+    if len(base) == 0 {
+        return top
+    }
+    keys := make([dynamic]Key, 0, 4, context.temp_allocator)
+    for list in ([2][]Span_Run{base, top}) {
+        for sp in list {
+            if !slice.contains(keys[:], sp.key) {
+                append(&keys, sp.key)
+            }
+        }
+    }
+    if len(keys) == 1 {
+        return key_overlay(base, top)
+    }
+    out := make([dynamic]Span_Run, 0, len(base) + len(top), context.temp_allocator)
+    for k in keys {
+        append(&out, ..key_overlay(only(base, k), only(top, k)))
+    }
+    slice.stable_sort_by(out[:], proc(x, y: Span_Run) -> bool {return x.lo < y.lo})
+    return out[:]
+}
+
+@(private = "file")
+only :: proc(list: []Span_Run, key: Key) -> []Span_Run {
+    out := make([dynamic]Span_Run, 0, len(list), context.temp_allocator)
+    for sp in list {
+        if sp.key == key {
+            append(&out, sp)
+        }
+    }
+    return out[:]
+}
+
+// Both lists flat and of one key.
+@(private = "file")
+key_overlay :: proc(base, top: []Span_Run) -> []Span_Run {
     if len(top) == 0 {
         return base
     }
@@ -250,6 +366,9 @@ span_merge :: proc(base, top: Span_Run, hold_b, hold_t: bool) -> (out: Span_Run)
     if !hold_t {
         return out
     }
+    if top.key != 0 {
+        return top
+    }
     if .Fg in top.set {
         out.fg = top.fg
     }
@@ -268,7 +387,8 @@ spans_push :: proc(out: ^[dynamic]Span_Run, run: Span_Run) {
     if len(out) > 0 {
         last := &out[len(out) - 1]
         if last.hi == run.lo && last.fg == run.fg && last.bg == run.bg &&
-           last.attrs == run.attrs && last.set == run.set {
+           last.attrs == run.attrs && last.set == run.set && last.key == run.key &&
+           last.open == run.open && last.text == run.text {
             last.hi = run.hi
             return
         }

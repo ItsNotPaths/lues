@@ -6,7 +6,7 @@ import "core:c"
 // include/lues.h and tests/rustplug/src/sys.rs mirror it, by hand. tests/abi_test.odin fails
 // when a field's name or offset, or an enum value, differs.
 
-API :: 4 // 2: fail. 3: adopt. 4: call, hooks, advice, doc-vars
+API :: 5 // 2: fail. 3: adopt. 4: call, hooks, advice, doc-vars. 5: data spans
 
 ENTRY :: "lues_main"
 
@@ -146,15 +146,22 @@ Chan :: enum u8 {
 }
 Chans :: distinct bit_set[Chan; u8]
 
-// Channels not in `set` come from the layer below.
+// Channels not in `set` come from the layer below. A run with a `key` is DATA, not a look: the
+// app reads it by name, and `tok`, `attrs` and `set` are ignored.
 Span :: struct {
-    size:  c.size_t,
-    lo:    c.size_t,
-    hi:    c.size_t,
-    tok:   Token,
-    attrs: u8, // the app's bits
-    set:   Chans,
-    _:     [4]u8,
+    size:     c.size_t,
+    lo:       c.size_t,
+    hi:       c.size_t,
+    tok:      Token,
+    attrs:    u8, // the app's bits
+    set:      Chans,
+    _:        [4]u8,
+    // API 5.
+    key:      Token, // an interned name; 0 is a look
+    open:     b8, // text typed at `lo` joins the run, as it always does at `hi`
+    _:        [5]u8,
+    text:     [^]u8, // nil: the run's own bytes are its value
+    text_len: c.size_t,
 }
 
 // Replaces this plugin's runs in [lo, hi).
@@ -240,7 +247,7 @@ Api :: struct {
 #assert(size_of(Snapshot) == 104)
 #assert(size_of(At) == 40)
 #assert(size_of(Edit) == 48)
-#assert(size_of(Span) == 32)
+#assert(size_of(Span) == 56)
 #assert(size_of(Span_Pub) == 40)
 #assert(size_of(Kind_Vt) == 24)
 #assert(size_of(Kind_Spec) == 64)

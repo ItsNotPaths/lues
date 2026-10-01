@@ -271,19 +271,23 @@ take_edits :: proc(edits: [^]Edit, n: int) -> (out: []docs.Splice, ok: bool) {
 @(private = "file")
 take_spans :: proc(k: ^Kernel, i: int, pub: ^Span_Pub) -> (out: docs.Spans, ok: bool) {
     has(pub.size, size_of(Span_Pub)) or_return
-    step := stride(Span, pub.spans, int(pub.nspans)) or_return
+    step := stride(Span, pub.spans, int(pub.nspans), int(offset_of(Span, key))) or_return
+    data := has(c.size_t(step), size_of(Span))
     list := make([]docs.Span_Run, pub.nspans, context.temp_allocator)
     for &run, j in list {
         sp := elem(Span, pub.spans, step, j)
-        set := transmute(docs.Chans)(sp.set & {.Fg, .Bg, .Attrs}) // stray bits are not channels
-        run = {
-            lo    = off(sp.lo),
-            hi    = off(sp.hi),
-            fg    = u32(sp.tok) if .Fg in set else 0,
-            bg    = u32(sp.tok) if .Bg in set else 0,
-            attrs = sp.attrs,
-            set   = set,
+        run = {lo = off(sp.lo), hi = off(sp.hi)}
+        if data && sp.key != 0 {
+            // Borrowed until store_submit copies it.
+            run.key, run.open = docs.Key(sp.key), bool(sp.open)
+            run.text = string(sp.text[:sp.text_len]) if sp.text != nil else ""
+            continue
         }
+        set := transmute(docs.Chans)(sp.set & {.Fg, .Bg, .Attrs}) // stray bits are not channels
+        run.fg = u32(sp.tok) if .Fg in set else 0
+        run.bg = u32(sp.tok) if .Bg in set else 0
+        run.attrs, run.set = sp.attrs, set
+        run.open = data && bool(sp.open)
     }
     return {who = producer_intern(k, k.plugs[i].name), lo = off(pub.lo), hi = off(pub.hi), list = list}, true
 }
