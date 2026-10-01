@@ -46,6 +46,7 @@ Record_Kind :: enum u8 {
     Command,
     Point,
     Join,
+    Var,
     Bind,
     Watch,
     Config,
@@ -379,6 +380,8 @@ revert :: proc(k: ^Kernel, p: ^Plugin, r: Record) {
         j := &k.joins[r.idx]
         delete(j.name)
         j^ = {owner = -1}
+    case .Var:
+        k.vars[r.idx].owner = -1 // the values stay
     case .Bind:
         k.reqs[r.idx].dead = true // the row in the file stays
     case .Config:

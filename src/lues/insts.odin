@@ -68,6 +68,7 @@ doc_close :: proc(k: ^Kernel, id: docs.Id) {
 // The app calls this for every doc it closes. A faulted plugin's close does not run.
 inst_close :: proc(k: ^Kernel, id: docs.Id) {
     context = k.ctx
+    vars_forget(k, id)
     inst, held := k.insts[id]
     if !held {
         return

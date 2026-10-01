@@ -4,8 +4,8 @@ import "core:slice"
 import "core:strings"
 import "../docs"
 
-// Hook listeners and command advice. Both join by name, so they can come before what they
-// join: the hook's definer, or the command.
+// Hook listeners, command advice and doc-var watches. All join by name, so they can come
+// before what they join.
 
 // `owner` = -1 after unload, as with commands.
 Hook_Point :: struct {
@@ -54,15 +54,14 @@ join_add :: proc(k: ^Kernel, i: int, name: string, fn: Command_Fn, how: Join_How
 
 // Temp-allocated, in run order. Taken before the run: a joiner that faults is unloaded
 // mid-run, and one may join while it runs.
-@(private = "file")
-joins_due :: proc(k: ^Kernel, name: string, advice: bool) -> []int {
+joins_due :: proc(k: ^Kernel, name: string, hows: bit_set[Join_How]) -> []int {
     Due :: struct {
         order: i64,
         join:  int,
     }
     due := make([dynamic]Due, context.temp_allocator)
     for j, n in k.joins {
-        if j.owner >= 0 && j.name == name && (j.how != .Hook) == advice {
+        if j.owner >= 0 && j.name == name && j.how in hows {
             append(&due, Due{j.order, n})
         }
     }
@@ -74,17 +73,21 @@ joins_due :: proc(k: ^Kernel, name: string, advice: bool) -> []int {
     return out
 }
 
-// 0, or under .Bail the exit that stopped it.
 point_run :: proc(k: ^Kernel, point: int, focused: docs.Id, args: string) -> i32 {
     context = k.ctx
     p := k.points[point]
-    for n in joins_due(k, p.name, false) {
+    return joins_emit(k, joins_due(k, p.name, {.Hook}), focused, args, p.mode == .Bail)
+}
+
+// 0, or with `bail` the first non-zero exit, which stops the rest.
+joins_emit :: proc(k: ^Kernel, due: []int, focused: docs.Id, args: string, bail := false) -> i32 {
+    for n in due {
         j := k.joins[n]
         if j.owner < 0 {
             continue // unloaded earlier in this run
         }
         code, ran := fn_run(k, j.owner, j.fn, focused, args)
-        if ran && p.mode == .Bail && code != 0 {
+        if ran && bail && code != 0 {
             return code
         }
     }
@@ -93,7 +96,7 @@ point_run :: proc(k: ^Kernel, point: int, focused: docs.Id, args: string) -> i32
 
 advice_run :: proc(k: ^Kernel, slot: int, focused: Maybe(docs.Id), args: string) -> (code: i32, ran: bool) {
     context = k.ctx
-    run := Advice_Run{slot, joins_due(k, k.cmds[slot].name, true), focused}
+    run := Advice_Run{slot, joins_due(k, k.cmds[slot].name, {.Before, .After, .Around}), focused}
     return advice_step(k, &run, 0, args)
 }
 
@@ -102,8 +105,7 @@ advice_run :: proc(k: ^Kernel, slot: int, focused: Maybe(docs.Id), args: string)
 advice_step :: proc(k: ^Kernel, run: ^Advice_Run, level: int, args: string) -> (code: i32, ran: bool) {
     for l in level ..< len(run.due) {
         j := k.joins[run.due[l]]
-        switch j.how {
-        case .Hook:
+        #partial switch j.how {
         case .Before:
             if j.owner >= 0 {
                 fn_run(k, j.owner, j.fn, run.focused, args)

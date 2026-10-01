@@ -61,6 +61,7 @@ Kernel :: struct {
     points:      [dynamic]Hook_Point,
     joins:       [dynamic]Join,
     arounds:     [dynamic]Around,
+    vars:        [dynamic]Doc_Var,
     join_seq:    i64,
     insts:       map[docs.Id]Plug_Inst,
     io:          ^work.Pool,
@@ -148,6 +149,7 @@ kernel_destroy :: proc(k: ^Kernel) {
     }
     delete(k.joins)
     delete(k.arounds)
+    vars_destroy(k)
     delete(k.insts)
     delete(k.io_jobs)
     tokens_destroy(k)

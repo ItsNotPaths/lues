@@ -3,6 +3,7 @@ package tests
 import "core:strings"
 import "core:sync"
 import "core:testing"
+import "../src/docs"
 import lues "../src/lues"
 
 // The test app with a tail, app_version 1: run executes a command inside the calling one.
@@ -260,4 +261,46 @@ advice_test :: proc(t: ^testing.T) {
     expect_said(t, &said, "before 0\nnplug faulted (SIGSEGV), and is unloaded\n")
     testing.expect(t, run(&k, "hello", nil, "0"))
     expect_said(t, &said, "0\n")
+}
+
+// A doc-var is the definer's to set and anyone's to read and watch. Its values outlive the
+// definer's reload, read-only, and go with their doc.
+@(test)
+var_test :: proc(t: ^testing.T) {
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Nest_Box
+    defer lues.kernel_destroy(&k)
+    if !nest_host(t, &k, &box, &said, "var") {
+        return
+    }
+    expect_said :: proc(t: ^testing.T, said: ^strings.Builder, want: string, loc := #caller_location) {
+        testing.expect_value(t, strings.to_string(said^), want, loc)
+        strings.builder_reset(said)
+    }
+    doc := docs.store_open(&k.store)
+
+    run(&k, "watch-mode")
+    testing.expect(t, run(&k, "define-mode"))
+    testing.expect(t, run(&k, "set-mode", doc, "dark"))
+    expect_said(t, &said, "m dark\n")
+    testing.expect(t, run(&k, "set-mode", doc, "dark"))
+    expect_said(t, &said, "") // unchanged
+    run(&k, "get-mode", doc)
+    expect_said(t, &said, "dar\n")
+    testing.expect(t, !run(&k, "steal-mode", doc, "x"))
+    testing.expect(t, !run(&k, "take-mode"))
+    expect_said(t, &said, "cplug: a doc-var called mode is nplug's\n")
+
+    testing.expect(t, lues.loader_reload(&k, "nplug"))
+    run(&k, "get-mode", doc)
+    expect_said(t, &said, "dar\n")
+    testing.expect(t, !run(&k, "set-mode", doc, "light"), "set before it was taken back")
+    testing.expect(t, run(&k, "define-mode"))
+    testing.expect(t, run(&k, "set-mode", doc, "light"))
+    expect_said(t, &said, "m light\n")
+
+    lues.doc_close(&k, doc)
+    v, _ := lues.var_named(&k, "mode")
+    testing.expect_value(t, len(k.vars[v].values), 0)
 }

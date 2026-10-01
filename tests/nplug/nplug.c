@@ -163,6 +163,18 @@ static int32_t advise_die(const lues_api *api, lues_self self, const lues_at *at
     return 0;
 }
 
+/* The `mode` doc-var. */
+static int32_t define_mode(const lues_api *api, lues_self self, const lues_at *at,
+                           const char *args, size_t args_len) {
+    (void)at, (void)args, (void)args_len;
+    return api->var_define(api, self, LIT("mode"));
+}
+
+static int32_t set_mode(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                        size_t args_len) {
+    return api->var_set(api, self, at->doc, LIT("mode"), args, args_len);
+}
+
 LUES_MAIN {
     if (strcmp(api->app, "test") != 0 || api->app_version < 1) {
         return 1;
@@ -178,6 +190,8 @@ LUES_MAIN {
     api->register_command(api, self, LIT("advise-around"), LIT("advise hello"), advise_around);
     api->register_command(api, self, LIT("advise-die"), LIT("advise hello with a fault"), advise_die);
     api->register_command(api, self, LIT("next-bare"), LIT("advice_next from a command"), next_bare);
+    api->register_command(api, self, LIT("define-mode"), LIT("define mode"), define_mode);
+    api->register_command(api, self, LIT("set-mode"), LIT("set mode"), set_mode);
     api->register_command(api, self, LIT("die"), LIT("dereference null"), die);
     return 0;
 }

@@ -6,7 +6,7 @@ import "../docs"
 // (hole abi-codegen :tags (abi) :sev missing-system) lues.h and rustplug's sys module are kept in step with this file by hand; nothing generates them or checks they agree.
 // include/lues.h mirrors this.
 
-API :: 4 // 2: fail. 3: adopt. 4: call, hooks, advice
+API :: 4 // 2: fail. 3: adopt. 4: call, hooks, advice, doc-vars
 
 ENTRY :: "lues_main"
 
@@ -42,12 +42,13 @@ Hook_Mode :: enum c.int32_t {
     Bail, // stops at the first non-zero exit
 }
 
-// What a join is: a hook listener, or advice on a command.
+// What a join is: a hook listener, advice on a command, or a doc-var watch.
 Join_How :: enum c.int32_t {
     Hook,
     Before,
     After,
     Around, // runs the rest through next
+    Watch,
 }
 
 Join_Flag :: enum u32 {
@@ -216,6 +217,14 @@ Api :: struct {
     // API 4. From around advice: runs the rest of the chain, with these args.
     advice_next:      proc "c" (api: ^Api, self: Self, args: [^]u8, args_len: c.size_t,
                                 code: ^c.int32_t) -> Call_Status,
+    // API 4. Doc-vars: the definer sets, anyone gets and watches. 0 when done.
+    var_define:       proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: c.size_t) -> c.int32_t,
+    var_set:          proc "c" (api: ^Api, self: Self, doc: Doc_Handle, name: [^]u8,
+                                name_len: c.size_t, value: [^]u8, value_len: c.size_t) -> c.int32_t,
+    // The value's length, with as much as fits copied into buf; -1 when it has none.
+    var_get:          proc "c" (api: ^Api, self: Self, doc: Doc_Handle, name: [^]u8,
+                                name_len: c.size_t, buf: [^]u8, cap: c.size_t) -> c.ptrdiff_t,
+    var_watch:        proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: c.size_t, fn: Command_Fn),
 }
 
 #assert(size_of(Block) == 16)
@@ -228,7 +237,7 @@ Api :: struct {
 #assert(size_of(Span_Pub) == 40)
 #assert(size_of(Kind_Vt) == 24)
 #assert(size_of(Kind_Spec) == 64)
-#assert(size_of(Api) == 200)
+#assert(size_of(Api) == 232)
 
 pack :: proc "contextless" (lo, hi: u32) -> u64 {
     return u64(lo) | u64(hi) << 32

@@ -101,6 +101,10 @@ mod sys {
         pub hook_run: Unused,
         pub advise: Unused,
         pub advice_next: Unused,
+        pub var_define: Unused,
+        pub var_set: Unused,
+        pub var_get: Unused,
+        pub var_watch: Unused,
     }
 
     // The sizes lues.h asserts.
@@ -109,7 +113,7 @@ mod sys {
     const _: () = assert!(size_of::<Snapshot>() == 104);
     const _: () = assert!(size_of::<At>() == 40);
     const _: () = assert!(size_of::<Edit>() == 48);
-    const _: () = assert!(size_of::<Api>() == 200);
+    const _: () = assert!(size_of::<Api>() == 232);
 }
 
 /// The kernel's vtable and this load's handle. Copy: both are plain values the kernel owns.

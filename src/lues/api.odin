@@ -44,7 +44,10 @@ api_init :: proc(k: ^Kernel) {
         hook_run         = api_hook_run,
         advise           = api_advise,
         advice_next      = api_advice_next,
-        // (hole doc-vars :tags (compose abi) :sev missing-system) no per-document variables: plugins cannot share named state.
+        var_define       = api_var_define,
+        var_set          = api_var_set,
+        var_get          = api_var_get,
+        var_watch        = api_var_watch,
     }
 }
 
@@ -439,6 +442,80 @@ api_advice_next :: proc "c" (api: ^Api, self: Self, args: [^]u8, args_len: uint,
         code^ = r
     }
     return .Ran
+}
+
+// Takes back an orphan of the same plugin name, values and all.
+@(private = "file")
+api_var_define :: proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: uint) -> c.int32_t {
+    k, i, ok := api_kernel(api, self)
+    defer api_done()
+    if !ok || name_len == 0 {
+        return 1
+    }
+    context = k.ctx
+    n := string(name[:name_len])
+    v, found := var_named(k, n)
+    if !found {
+        append(&k.vars, Doc_Var{name = strings.clone(n), plugin = strings.clone(k.plugs[i].name), owner = -1})
+        v = len(k.vars) - 1
+    }
+    if k.vars[v].owner >= 0 || k.vars[v].plugin != k.plugs[i].name {
+        say(k, fmt.tprintf("%s: a doc-var called %s is %s's", k.plugs[i].name, n, k.vars[v].plugin))
+        return 1
+    }
+    k.vars[v].owner = i
+    record(k, i, {what = .Var, idx = v})
+    return 0
+}
+
+@(private = "file")
+api_var_set :: proc "c" (api: ^Api, self: Self, doc: Doc_Handle, name: [^]u8, name_len: uint,
+                         value: [^]u8, value_len: uint) -> c.int32_t {
+    k, i, ok := api_kernel(api, self)
+    defer api_done()
+    if !ok {
+        return 1
+    }
+    context = k.ctx
+    v, found := var_named(k, string(name[:name_len]))
+    id := doc_id(doc)
+    if !found || k.vars[v].owner != i || docs.store_doc(&k.store, id) == nil {
+        return 1
+    }
+    var_set(k, v, id, value[:value_len])
+    return 0
+}
+
+@(private = "file")
+api_var_get :: proc "c" (api: ^Api, self: Self, doc: Doc_Handle, name: [^]u8, name_len: uint,
+                         buf: [^]u8, cap: uint) -> c.ptrdiff_t {
+    k, _, ok := api_kernel(api, self)
+    defer api_done()
+    if !ok {
+        return -1
+    }
+    context = k.ctx
+    v, found := var_named(k, string(name[:name_len]))
+    if !found {
+        return -1
+    }
+    value, held := k.vars[v].values[doc_id(doc)]
+    if !held {
+        return -1
+    }
+    copy(buf[:cap], value)
+    return c.ptrdiff_t(len(value))
+}
+
+@(private = "file")
+api_var_watch :: proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: uint, fn: Command_Fn) {
+    k, i, ok := api_kernel(api, self)
+    defer api_done()
+    if !ok || fn == nil || name_len == 0 {
+        return
+    }
+    context = k.ctx
+    join_add(k, i, string(name[:name_len]), fn, .Watch, {})
 }
 
 @(private = "file")

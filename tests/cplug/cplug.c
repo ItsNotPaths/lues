@@ -659,6 +659,45 @@ static int32_t join_boom(const lues_api *api, lues_self self, const lues_at *at,
     return 0;
 }
 
+/* The `mode` doc-var, which nplug defines: watch it, read it, and try to write or take it. */
+static int32_t mode_changed(const lues_api *api, lues_self self, const lues_at *at,
+                            const char *args, size_t args_len) {
+    (void)at;
+    return greet_as(api, self, 'm', args, args_len);
+}
+
+static int32_t watch_mode(const lues_api *api, lues_self self, const lues_at *at,
+                          const char *args, size_t args_len) {
+    (void)at, (void)args, (void)args_len;
+    api->var_watch(api, self, LIT("mode"), mode_changed);
+    return 0;
+}
+
+static int32_t get_mode(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                        size_t args_len) {
+    char      buf[3];
+    ptrdiff_t n;
+    (void)args, (void)args_len;
+    n = api->var_get(api, self, at->doc, LIT("mode"), buf, sizeof buf);
+    if (n < 0) {
+        api->message(api, self, LIT("none"));
+        return 1;
+    }
+    api->message(api, self, buf, n < (ptrdiff_t)sizeof buf ? (size_t)n : sizeof buf);
+    return 0;
+}
+
+static int32_t set_mode(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                        size_t args_len) {
+    return api->var_set(api, self, at->doc, LIT("mode"), args, args_len);
+}
+
+static int32_t define_mode(const lues_api *api, lues_self self, const lues_at *at,
+                           const char *args, size_t args_len) {
+    (void)at, (void)args, (void)args_len;
+    return api->var_define(api, self, LIT("mode"));
+}
+
 LUES_MAIN {
     if (strcmp(api->app, "test") != 0) {
         return 1;
@@ -711,6 +750,10 @@ LUES_MAIN {
     api->register_command(api, self, LIT("join-a"), LIT("join greet"), join_a);
     api->register_command(api, self, LIT("join-b-first"), LIT("join greet, first"), join_b_first);
     api->register_command(api, self, LIT("join-boom"), LIT("join greet with a fault"), join_boom);
+    api->register_command(api, self, LIT("watch-mode"), LIT("watch mode"), watch_mode);
+    api->register_command(api, self, LIT("get-mode"), LIT("say mode, cut to 3 bytes"), get_mode);
+    api->register_command(api, self, LIT("steal-mode"), LIT("set mode, not its own"), set_mode);
+    api->register_command(api, self, LIT("take-mode"), LIT("define mode, not its own"), define_mode);
     api->register_command(api, self, LIT("adoptk"), LIT("adopt the kernel's object"), adoptk);
     return 0;
 }

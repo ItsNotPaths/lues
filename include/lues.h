@@ -236,6 +236,20 @@ typedef struct lues_api {
      * ABSENT: no around of yours is running. */
     lues_call_status (*advice_next)(const struct lues_api *api, lues_self self,
                                     const char *args, size_t args_len, int32_t *code);
+
+    /* LUES_API 4. Doc-vars: named bytes per doc. Only the definer sets one; anyone gets and
+     * watches it. When the definer unloads, the values stay, read-only, until a plugin of the
+     * same name defines it again. 0 when done. */
+    int32_t (*var_define)(const struct lues_api *api, lues_self self, const char *name,
+                          size_t name_len);
+    int32_t (*var_set)(const struct lues_api *api, lues_self self, lues_doc doc,
+                       const char *name, size_t name_len, const char *value, size_t value_len);
+    /* The value's length, with as much as fits copied into buf; -1 when it has none. */
+    ptrdiff_t (*var_get)(const struct lues_api *api, lues_self self, lues_doc doc,
+                         const char *name, size_t name_len, char *buf, size_t cap);
+    /* fn runs on each change, on that doc, with the new value as its args. */
+    void (*var_watch)(const struct lues_api *api, lues_self self, const char *name,
+                      size_t name_len, lues_command_fn fn);
 } lues_api;
 
 #ifdef __cplusplus
@@ -253,7 +267,7 @@ LUES_SIZE(lues_span, 32);
 LUES_SIZE(lues_span_pub, 40);
 LUES_SIZE(lues_kind_vt, 24);
 LUES_SIZE(lues_kind_spec, 64);
-LUES_SIZE(lues_api, 200);
+LUES_SIZE(lues_api, 232);
 
 /* Non-zero refuses the load and reverts what you registered. */
 #define LUES_MAIN LUES_EXPORT int32_t lues_main(const lues_api *api, lues_self self)
