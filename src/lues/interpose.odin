@@ -6,7 +6,7 @@ import "core:sys/posix"
 // The app exports these: an @(export) lands in an executable's dynamic symbols, so a plugin's
 // calls, and those of any library it loaded, reach them before libc's. A call from plugin code
 // never replaces lues's handlers: a fault signal's handler is chained (see fault_chain), and the
-// watchdog's signals are refused. Anything else passes through. A raw syscall or an
+// watchdog's and the reap signal are refused. Anything else passes through. A raw syscall or an
 // RTLD_DEEPBIND library goes around them; fault_kept repairs that after the call.
 
 @(export, link_name = "sigaction")
@@ -15,7 +15,7 @@ interpose_sigaction :: proc "c" (sig: posix.Signal, act, old: ^posix.sigaction_t
     if running == nil {
         return os_sigaction(sig, act, old)
     }
-    if sig == .SIGALRM || sig == .SIGTRAP {
+    if sig == .SIGALRM || sig == .SIGTRAP || sig == fault_reap_signal() {
         posix.errno(.EINVAL)
         return .FAIL
     }
@@ -54,7 +54,10 @@ interpose_pthread_create :: proc "c" (t: ^posix.pthread_t, attr: ^posix.pthread_
                                       fn: proc "c" (arg: rawptr) -> rawptr, arg: rawptr) -> posix.Errno {
     Create :: proc "c" (^posix.pthread_t, ^posix.pthread_attr_t, proc "c" (arg: rawptr) -> rawptr, rawptr) -> posix.Errno
     real := Create(libc_next(&g_create, "pthread_create"))
-    start := fault_thread(fn, arg)
+    start, full := fault_thread(fn, arg)
+    if full {
+        return .EAGAIN
+    }
     if start == nil {
         return real(t, attr, fn, arg)
     }

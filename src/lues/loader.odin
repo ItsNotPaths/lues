@@ -287,6 +287,7 @@ self_handle :: proc(k: ^Kernel, i: int) -> Self {
 
 @(private = "file")
 unload :: proc(k: ^Kernel, i: int) {
+    stopped := fault_stop_threads(k, i)
     // Collected first: closing deletes from insts.
     mine := make([dynamic]docs.Id, 0, len(k.insts), context.temp_allocator)
     for id, inst in k.insts {
@@ -334,8 +335,11 @@ unload :: proc(k: ^Kernel, i: int) {
         }
     }
     clear(&p.ledger)
-    // (hole thread-reap :tags (fault loader) :sev missing-system) threads a plugin started outlive it: they run on after a fault and crash after dlclose.
     // (hole plugin-arenas :tags (memory abi) :sev missing-system) no arena per plugin; what a faulted plugin allocated leaks.
+    if p.state == .Live && !stopped {
+        p.state = .Faulted
+        say(k, fmt.tprintf("%s: a thread of its own did not stop, so it stays mapped", p.name))
+    }
     if p.state == .Live {
         dynlib.unload_library(p.lib)
         p.state = .Unloaded

@@ -8,6 +8,7 @@ import "core:strings"
 import "core:sync"
 import "core:sys/posix"
 import "core:testing"
+import "core:time"
 import "../src/docs"
 import lues "../src/lues"
 
@@ -137,6 +138,47 @@ raw_kept_test :: proc(t: ^testing.T) {
     testing.expect(t, strings.contains(strings.to_string(said), "replaced a fault handler"), strings.to_string(said))
     testing.expect(t, !run(&k, "boom"))
     testing.expect_value(t, lues.loader_find(&k, "cplug"), -1)
+}
+
+// Unloading ends the plugin's threads: one in its own code at once, one in nanosleep once it is
+// stepped back out of libc. Then the plugin is unmapped.
+@(test)
+reap_test :: proc(t: ^testing.T) {
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Api_Box
+    defer lues.kernel_destroy(&k)
+    i, ok := plug_host(t, &k, &box, &said, "reap")
+    if !ok {
+        return
+    }
+
+    for how in ([]string{"spin", "sleep"}) {
+        testing.expect(t, run(&k, "thread", args = how), how)
+        from := time.tick_now()
+        testing.expect(t, lues.loader_unload(&k, i), how)
+        testing.expectf(t, time.tick_since(from) < time.Second, "%s: unload took %v", how, time.tick_since(from))
+        testing.expect_value(t, k.plugs[i].state, lues.Plug_State.Unloaded)
+        testing.expect(t, lues.loader_load(&k, lues.loader_path(&k, "cplug")), strings.to_string(said))
+    }
+}
+
+// A thread that can't be ended (blocked on a lock) keeps the plugin mapped, not unmapped under it.
+@(test)
+reap_stuck_test :: proc(t: ^testing.T) {
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Api_Box
+    defer lues.kernel_destroy(&k)
+    i, ok := plug_host(t, &k, &box, &said, "reap-stuck")
+    if !ok {
+        return
+    }
+
+    testing.expect(t, run(&k, "thread", args = "lock"))
+    testing.expect(t, lues.loader_unload(&k, i))
+    testing.expect_value(t, k.plugs[i].state, lues.Plug_State.Faulted)
+    testing.expect(t, strings.contains(strings.to_string(said), "did not stop"), strings.to_string(said))
 }
 
 // A fault lues would die on goes to the plugin's own handler first, which can recover it.

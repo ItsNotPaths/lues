@@ -29,6 +29,7 @@ foreign libc_ {
     backtrace_symbols_fd :: proc(buf: [^]rawptr, size: c.int, fd: posix.FD) ---
     abort :: proc() -> ! ---
     gnu_get_libc_version :: proc() -> cstring ---
+    __libc_current_sigrtmax :: proc() -> c.int ---
 }
 
 // glibc's is 200 bytes.
@@ -74,6 +75,7 @@ Guard :: struct {
     frames: [FAULT_DEPTH]Frame,
     depth:  int, // atomic; 0 is unarmed
     step:   int, // the depth of the frame a hang is being stepped back into; 0 for none
+    stepped: string, // why it is being stepped: the unwind's why
     why:    string, // a literal, or fail's copy in `said`
     said:   [SAID_MAX]u8,
     traced: bool,
@@ -132,6 +134,14 @@ fault_install :: proc() -> bool {
         if !install(sig) {
             return false
         }
+    }
+    act := posix.sigaction_t {
+        sa_sigaction = reap_handler,
+        sa_flags     = {.SIGINFO, .ONSTACK},
+    }
+    posix.sigemptyset(&act.sa_mask)
+    if os_sigaction(fault_reap_signal(), &act, nil) != .OK {
+        return false
     }
     // The first backtrace dlopens the unwinder and mallocs; do it here, not in the handler.
     warm: [1]rawptr
@@ -340,32 +350,64 @@ put_name :: proc "contextless" (buf: []u8, name: string) -> int {
 // A thread that plugin code starts runs under a copy of the frame that started it, so a fault on
 // it is judged and unwound the same way, and the thread never reads the plugin table, which the
 // main thread may be moving. Unloading is the main thread's: the thread posts the fault in
-// Kernel.lost and ends, and loader_reap unloads the plugin. No watchdog watches it.
+// Kernel.lost and ends, and loader_reap unloads the plugin. No watchdog watches it. Unloading
+// a plugin ends its threads the same way, with the reap signal (fault_stop_threads).
+
+// Plugin threads alive at once; past this, pthread_create says EAGAIN.
+THREADS_MAX :: 256
+
+// How long an unload waits for a plugin's threads to end.
+REAP_MS :: 1000
+
+@(private = "file")
+Thread_Slot :: struct {
+    state: enum u8 {Free, Taken, Live}, // atomic; Taken is starting, and only Live is signalled
+    tid:   posix.pthread_t,
+    app:   ^Kernel,
+    who:   int,
+    gen:   u32,
+    told:  bool, // signalled; the main thread's
+}
+
+@(private = "file")
+g_threads: [THREADS_MAX]Thread_Slot
+
+@(private = "file")
+REAPED :: "reaped"
 
 @(private = "file")
 Thread_Start :: struct {
     fn:     proc "c" (arg: rawptr) -> rawptr,
     arg:    rawptr,
+    slot:   ^Thread_Slot,
     parent: Frame,
 }
 
-// The arg for fault_thread_main; nil when no plugin code runs on this thread.
-fault_thread :: proc "contextless" (fn: proc "c" (arg: rawptr) -> rawptr, arg: rawptr) -> rawptr {
+// The arg for fault_thread_main; nil when no plugin code runs on this thread, or `full`.
+fault_thread :: proc "contextless" (fn: proc "c" (arg: rawptr) -> rawptr, arg: rawptr) -> (start: rawptr, full: bool) {
     f := top()
     if f == nil || intrinsics.atomic_load(&f.busy) {
-        return nil
+        return nil, false
     }
+    slot := take()
+    if slot == nil {
+        return nil, true
+    }
+    slot.app, slot.who, slot.gen, slot.told = f.app, f.who, f.gen, false
     context = runtime.default_context()
     s := new(Thread_Start, f.ctx.allocator)
-    if s != nil {
-        s^ = {fn = fn, arg = arg, parent = f^}
+    if s == nil {
+        intrinsics.atomic_store(&slot.state, .Free)
+        return nil, true
     }
-    return s
+    s^ = {fn = fn, arg = arg, slot = slot, parent = f^}
+    return s, false
 }
 
 // The thread never started.
 fault_thread_drop :: proc "contextless" (arg: rawptr) {
     s := (^Thread_Start)(arg)
+    intrinsics.atomic_store(&s.slot.state, .Free)
     context = runtime.default_context()
     free(s, s.parent.ctx.allocator)
 }
@@ -376,9 +418,13 @@ fault_thread_main :: proc "c" (arg: rawptr) -> rawptr {
     context.allocator = s.parent.ctx.allocator
     start := s^
     free(s)
+    slot := start.slot
     fault_install() // this thread's alt stack
     if sigsetjmp(fault_env(), 1) != 0 {
-        post()
+        if g_guard.why != REAPED {
+            post()
+        }
+        intrinsics.atomic_store(&slot.state, .Free)
         return nil
     }
     p := &start.parent
@@ -386,9 +432,55 @@ fault_thread_main :: proc "c" (arg: rawptr) -> rawptr {
     f.app, f.who, f.gen, f.chain, f.base, f.via = p.app, p.who, p.gen, p.chain, p.base, nil
     f.objects, f.nobjects, f.name, f.n = p.objects, p.nobjects, p.name, p.n
     push(f)
+    slot.tid = posix.pthread_self()
+    intrinsics.atomic_store(&slot.state, .Live)
     ret := start.fn(start.arg)
+    intrinsics.atomic_store(&slot.state, .Free)
     fault_disarm()
     return ret
+}
+
+// Ends plugin i's threads. False when one has not ended by REAP_MS: it may still run the
+// plugin's code, so the plugin must stay mapped.
+fault_stop_threads :: proc(k: ^Kernel, i: int) -> bool {
+    gen := k.plugs[i].gen
+    until := time.tick_now()._nsec + REAP_MS * 1e6
+    for {
+        left := false
+        for &s in g_threads {
+            state := intrinsics.atomic_load(&s.state)
+            if state == .Free || s.app != k || s.who != i || s.gen != gen {
+                continue
+            }
+            left = true
+            if state == .Live && !s.told {
+                posix.pthread_kill(s.tid, fault_reap_signal())
+                s.told = true
+            }
+        }
+        if !left {
+            return true
+        }
+        if time.tick_now()._nsec > until {
+            return false
+        }
+        time.sleep(time.Millisecond)
+    }
+}
+
+// The top realtime signal: glibc keeps the low ones.
+fault_reap_signal :: proc "contextless" () -> posix.Signal {
+    return posix.Signal(__libc_current_sigrtmax())
+}
+
+@(private = "file")
+take :: proc "contextless" () -> ^Thread_Slot {
+    for &s in g_threads {
+        if _, ok := intrinsics.atomic_compare_exchange_strong(&s.state, .Free, .Taken); ok {
+            return &s
+        }
+    }
+    return nil
 }
 
 // Posts the frame unwind popped. A second plugin's post waits for the first to be reaped.
@@ -480,7 +572,7 @@ hang_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr)
         g.traced = trace_write(n, "stopped returning")
         unwind("stopped returning")
     }
-    g.step = intrinsics.atomic_load(&g.depth)
+    g.step, g.stepped = intrinsics.atomic_load(&g.depth), "stopped returning"
     step(uc, true)
     intrinsics.atomic_store(&g_watch_until, time.tick_now()._nsec + g_watch_ms * 1e6)
 }
@@ -506,8 +598,29 @@ step_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr)
         return
     }
     g.step = 0
-    g.traced = trace_write(n, "stopped returning")
-    unwind("stopped returning")
+    if g.stepped != REAPED {
+        g.traced = trace_write(n, g.stepped)
+    }
+    unwind(g.stepped)
+}
+
+// Ends a plugin thread at its base frame, as a hang is ended: stepped back to the plugin's own
+// code first when it is in libc or an api call.
+@(private = "file")
+reap_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr) {
+    g := &g_guard
+    f := top()
+    if f == nil || g.step != 0 {
+        return // left its frame, or already on its way out
+    }
+    pc := fault_ip(uc)
+    if !intrinsics.atomic_load(&f.busy) && in_plugin(f, pc) {
+        if n, at := walk(pc); owned(f, n, at) {
+            unwind(REAPED)
+        }
+    }
+    g.step, g.stepped = intrinsics.atomic_load(&g.depth), REAPED
+    step(uc, true)
 }
 
 @(private = "file")

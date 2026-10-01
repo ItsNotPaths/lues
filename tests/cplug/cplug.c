@@ -111,6 +111,50 @@ static int spent(const struct timespec *from) {
     return now.tv_sec - from->tv_sec >= 5;
 }
 
+/* `thread spin|sleep|lock`: a detached thread that runs on for five seconds, in its own code,
+ * in nanosleep, or blocked on a mutex the command keeps locked. */
+static pthread_mutex_t HELD = PTHREAD_MUTEX_INITIALIZER;
+
+static void *run_on(void *arg) {
+    struct timespec from, nap = {0, 50000000}, until;
+    const char     *how = arg;
+    clock_gettime(CLOCK_MONOTONIC, &from);
+    if (how[0] == 'l') {
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_sec += 5;
+        if (pthread_mutex_timedlock(&HELD, &until) == 0) {
+            pthread_mutex_unlock(&HELD);
+        }
+        return NULL;
+    }
+    while (!spent(&from)) {
+        if (how[0] == 's' && how[1] == 'l') {
+            nanosleep(&nap, NULL);
+        }
+    }
+    return NULL;
+}
+
+static int32_t thread_cmd(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                          size_t args_len) {
+    static const char *HOWS[] = {"spin", "sleep", "lock"};
+    pthread_t t;
+    (void)api, (void)self, (void)at;
+    for (size_t i = 0; i < 3; i++) {
+        if (strlen(HOWS[i]) == args_len && memcmp(HOWS[i], args, args_len) == 0) {
+            if (i == 2 && pthread_mutex_trylock(&HELD) != 0) {
+                return 1;
+            }
+            if (pthread_create(&t, NULL, run_on, (void *)HOWS[i]) != 0) {
+                return 1;
+            }
+            pthread_detach(t);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* Stops returning inside a qsort comparator: never back in its own frames alone. */
 static struct timespec SORT_FROM;
 
@@ -530,6 +574,7 @@ LUES_MAIN {
     api->register_command(api, self, LIT("sortboom"), LIT("fault under qsort"), sortboom);
     api->register_command(api, self, LIT("strboom"), LIT("fault in strlen"), strboom);
     api->register_command(api, self, LIT("threadboom"), LIT("fault on a thread"), threadboom);
+    api->register_command(api, self, LIT("thread"), LIT("start a thread that runs on"), thread_cmd);
     api->register_command(api, self, LIT("catch"), LIT("catch a grammar fault itself"), catch_cmd);
     api->register_command(api, self, LIT("sigign"), LIT("ignore SIGSEGV through signal"), sigign);
     api->register_command(api, self, LIT("rawsig"), LIT("ignore SIGSEGV by syscall"), rawsig);
