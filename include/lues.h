@@ -33,7 +33,13 @@ typedef enum {
     LUES_HOOK_BAIL = 1  /* stops at the first non-zero exit */
 } lues_hook_mode;
 
-#define LUES_HOOK_PREPEND (1u << 0) /* runs before the listeners already there */
+typedef enum {
+    LUES_ADVICE_BEFORE = 1,
+    LUES_ADVICE_AFTER  = 2,
+    LUES_ADVICE_AROUND = 3 /* runs the rest through advice_next */
+} lues_advice;
+
+#define LUES_PREPEND (1u << 0) /* runs before, or outside, the joins already there */
 
 typedef enum {
     LUES_EVENT_CHORD  = 0,
@@ -220,6 +226,16 @@ typedef struct lues_api {
     lues_call_status (*hook_run)(const struct lues_api *api, lues_self self, lues_doc doc,
                                  const char *name, size_t name_len,
                                  const char *args, size_t args_len, int32_t *code);
+
+    /* LUES_API 4. Joins the command `name`, before or after it is registered, and wraps every
+     * run of it: a bind, a call. The first joined is outermost. Advice gets the command's args;
+     * a before or after's exit is ignored, and an around's is the command's. */
+    void (*advise)(const struct lues_api *api, lues_self self, const char *name,
+                   size_t name_len, lues_command_fn fn, lues_advice how, uint32_t flags);
+    /* From an around: runs the rest of the chain with `args`, and `code` gets its exit.
+     * ABSENT: no around of yours is running. */
+    lues_call_status (*advice_next)(const struct lues_api *api, lues_self self,
+                                    const char *args, size_t args_len, int32_t *code);
 } lues_api;
 
 #ifdef __cplusplus
@@ -237,7 +253,7 @@ LUES_SIZE(lues_span, 32);
 LUES_SIZE(lues_span_pub, 40);
 LUES_SIZE(lues_kind_vt, 24);
 LUES_SIZE(lues_kind_spec, 64);
-LUES_SIZE(lues_api, 184);
+LUES_SIZE(lues_api, 200);
 
 /* Non-zero refuses the load and reverts what you registered. */
 #define LUES_MAIN LUES_EXPORT int32_t lues_main(const lues_api *api, lues_self self)

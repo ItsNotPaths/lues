@@ -648,7 +648,7 @@ static int32_t join_a(const lues_api *api, lues_self self, const lues_at *at, co
 static int32_t join_b_first(const lues_api *api, lues_self self, const lues_at *at,
                             const char *args, size_t args_len) {
     (void)at, (void)args, (void)args_len;
-    api->hook_add(api, self, LIT("greet"), greet_b, LUES_HOOK_PREPEND);
+    api->hook_add(api, self, LIT("greet"), greet_b, LUES_PREPEND);
     return 0;
 }
 

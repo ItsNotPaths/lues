@@ -213,3 +213,51 @@ hook_test :: proc(t: ^testing.T) {
     run(&k, "fire", nil, "y")
     expect_said(t, &said, "n y\nran 0\n")
 }
+
+// Advice wraps a command, the first joined outermost. An around can change the args and stands
+// in for the exit. Advice can join before the command exists, and goes with its plugin.
+@(test)
+advice_test :: proc(t: ^testing.T) {
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Nest_Box
+    defer lues.kernel_destroy(&k)
+    if !nest_host(t, &k, &box, &said, "advice") {
+        return
+    }
+    expect_said :: proc(t: ^testing.T, said: ^strings.Builder, want: string, loc := #caller_location) {
+        testing.expect_value(t, strings.to_string(said^), want, loc)
+        strings.builder_reset(said)
+    }
+    exit :: proc(k: ^lues.Kernel, args: string) -> i32 {
+        slot, _ := lues.cmd_named(k, "hello")
+        code, _ := lues.cmd_call(k, slot, nil, args)
+        return code
+    }
+
+    run(&k, "advise-before")
+    run(&k, "advise-after")
+    testing.expect_value(t, exit(&k, "3"), 3)
+    expect_said(t, &said, "before 3\n3\nafter 3\n")
+    run(&k, "advise-around")
+    testing.expect_value(t, exit(&k, "3"), 7)
+    expect_said(t, &said, "before 3\naround in\n7\naround out\nafter 3\n")
+    run(&k, "next-bare")
+    expect_said(t, &said, "absent\n")
+
+    testing.expect(t, lues.loader_reload(&k, "nplug"))
+    testing.expect_value(t, exit(&k, "3"), 3)
+    expect_said(t, &said, "3\n")
+
+    lues.loader_unload(&k, lues.loader_find(&k, "cplug"))
+    run(&k, "advise-before")
+    testing.expect(t, lues.loader_load(&k, lues.loader_path(&k, "cplug")))
+    testing.expect_value(t, exit(&k, "3"), 3)
+    expect_said(t, &said, "before 3\n3\n")
+
+    run(&k, "advise-die")
+    testing.expect(t, !run(&k, "hello", nil, "0"))
+    expect_said(t, &said, "before 0\nnplug faulted (SIGSEGV), and is unloaded\n")
+    testing.expect(t, run(&k, "hello", nil, "0"))
+    expect_said(t, &said, "0\n")
+}

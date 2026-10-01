@@ -59,7 +59,8 @@ Kernel :: struct {
     kinds:       [dynamic]Plug_Kind,
     cmds:        [dynamic]Plug_Cmd,
     points:      [dynamic]Hook_Point,
-    joins:       [dynamic]Hook_Join,
+    joins:       [dynamic]Join,
+    arounds:     [dynamic]Around,
     join_seq:    i64,
     insts:       map[docs.Id]Plug_Inst,
     io:          ^work.Pool,
@@ -146,6 +147,7 @@ kernel_destroy :: proc(k: ^Kernel) {
         delete(j.name)
     }
     delete(k.joins)
+    delete(k.arounds)
     delete(k.insts)
     delete(k.io_jobs)
     tokens_destroy(k)

@@ -6,7 +6,7 @@ import "../docs"
 // (hole abi-codegen :tags (abi) :sev missing-system) lues.h and rustplug's sys module are kept in step with this file by hand; nothing generates them or checks they agree.
 // include/lues.h mirrors this.
 
-API :: 4 // 2: fail. 3: adopt. 4: call, hooks
+API :: 4 // 2: fail. 3: adopt. 4: call, hooks, advice
 
 ENTRY :: "lues_main"
 
@@ -42,10 +42,18 @@ Hook_Mode :: enum c.int32_t {
     Bail, // stops at the first non-zero exit
 }
 
-Hook_Flag :: enum u32 {
-    Prepend = 0, // runs before the listeners already there
+// What a join is: a hook listener, or advice on a command.
+Join_How :: enum c.int32_t {
+    Hook,
+    Before,
+    After,
+    Around, // runs the rest through next
 }
-Hook_Flags :: distinct bit_set[Hook_Flag; u32]
+
+Join_Flag :: enum u32 {
+    Prepend = 0, // runs before, or outside, the joins already there
+}
+Join_Flags :: distinct bit_set[Join_Flag; u32]
 
 // --- the read view: the piece table, read in place ---
 
@@ -198,9 +206,15 @@ Api :: struct {
     hook_define:      proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: c.size_t,
                                 mode: Hook_Mode) -> c.int32_t,
     hook_add:         proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: c.size_t,
-                                fn: Command_Fn, flags: Hook_Flags),
+                                fn: Command_Fn, flags: Join_Flags),
     hook_run:         proc "c" (api: ^Api, self: Self, doc: Doc_Handle, name: [^]u8,
                                 name_len: c.size_t, args: [^]u8, args_len: c.size_t,
+                                code: ^c.int32_t) -> Call_Status,
+    // API 4. Advice joins a command by name, as hook_add joins a hook.
+    advise:           proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: c.size_t,
+                                fn: Command_Fn, how: Join_How, flags: Join_Flags),
+    // API 4. From around advice: runs the rest of the chain, with these args.
+    advice_next:      proc "c" (api: ^Api, self: Self, args: [^]u8, args_len: c.size_t,
                                 code: ^c.int32_t) -> Call_Status,
 }
 
@@ -214,7 +228,7 @@ Api :: struct {
 #assert(size_of(Span_Pub) == 40)
 #assert(size_of(Kind_Vt) == 24)
 #assert(size_of(Kind_Spec) == 64)
-#assert(size_of(Api) == 184)
+#assert(size_of(Api) == 200)
 
 pack :: proc "contextless" (lo, hi: u32) -> u64 {
     return u64(lo) | u64(hi) << 32

@@ -42,6 +42,8 @@ api_init :: proc(k: ^Kernel) {
         hook_define      = api_hook_define,
         hook_add         = api_hook_add,
         hook_run         = api_hook_run,
+        advise           = api_advise,
+        advice_next      = api_advice_next,
         // (hole doc-vars :tags (compose abi) :sev missing-system) no per-document variables: plugins cannot share named state.
     }
 }
@@ -372,17 +374,14 @@ api_hook_define :: proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: uint,
 }
 
 @(private = "file")
-api_hook_add :: proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: uint, fn: Command_Fn, flags: Hook_Flags) {
+api_hook_add :: proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: uint, fn: Command_Fn, flags: Join_Flags) {
     k, i, ok := api_kernel(api, self)
     defer api_done()
     if !ok || fn == nil || name_len == 0 {
         return
     }
     context = k.ctx
-    k.join_seq += 1
-    order := -k.join_seq if .Prepend in flags else k.join_seq
-    append(&k.joins, Hook_Join{strings.clone(string(name[:name_len])), i, fn, order})
-    record(k, i, {what = .Join, idx = len(k.joins) - 1})
+    join_add(k, i, string(name[:name_len]), fn, .Hook, flags)
 }
 
 @(private = "file")
@@ -399,6 +398,43 @@ api_hook_run :: proc "c" (api: ^Api, self: Self, doc: Doc_Handle, name: [^]u8, n
         return .Absent
     }
     r := point_run(k, point, doc_id(doc), string(args[:args_len]))
+    if code != nil {
+        code^ = r
+    }
+    return .Ran
+}
+
+@(private = "file")
+api_advise :: proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: uint, fn: Command_Fn,
+                       how: Join_How, flags: Join_Flags) {
+    k, i, ok := api_kernel(api, self)
+    defer api_done()
+    if !ok || fn == nil || name_len == 0 || how <= .Hook || how > .Around {
+        return
+    }
+    context = k.ctx
+    join_add(k, i, string(name[:name_len]), fn, how, flags)
+}
+
+@(private = "file")
+api_advice_next :: proc "c" (api: ^Api, self: Self, args: [^]u8, args_len: uint, code: ^c.int32_t) -> Call_Status {
+    k, i, ok := api_kernel(api, self)
+    defer api_done()
+    if !ok {
+        return .Failed
+    }
+    context = k.ctx
+    if len(k.arounds) == 0 {
+        return .Absent
+    }
+    top := k.arounds[len(k.arounds) - 1]
+    if k.joins[top.run.due[top.level]].owner != i {
+        return .Absent
+    }
+    r, ran := advice_step(k, top.run, top.level + 1, string(args[:args_len]))
+    if !ran {
+        return .Failed
+    }
     if code != nil {
         code^ = r
     }

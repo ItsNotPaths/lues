@@ -93,6 +93,76 @@ static int32_t join_n(const lues_api *api, lues_self self, const lues_at *at, co
     return 0;
 }
 
+/* Advice on cplug's `hello`. The around passes 7 on in place of the args. */
+static void say_args(const lues_api *api, lues_self self, const char *what, const char *args,
+                     size_t args_len) {
+    char buf[64];
+    int  n = snprintf(buf, sizeof buf, "%s %.*s", what, (int)args_len, args);
+    api->message(api, self, buf, (size_t)n);
+}
+
+static int32_t before(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                      size_t args_len) {
+    (void)at;
+    say_args(api, self, "before", args, args_len);
+    return 9;
+}
+
+static int32_t after(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                     size_t args_len) {
+    (void)at;
+    say_args(api, self, "after", args, args_len);
+    return 9;
+}
+
+static int32_t around(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                      size_t args_len) {
+    int32_t code = -1;
+    (void)at, (void)args, (void)args_len;
+    api->message(api, self, LIT("around in"));
+    api->advice_next(api, self, LIT("7"), &code);
+    api->message(api, self, LIT("around out"));
+    return code;
+}
+
+static int32_t advise_before(const lues_api *api, lues_self self, const lues_at *at,
+                             const char *args, size_t args_len) {
+    (void)at, (void)args, (void)args_len;
+    api->advise(api, self, LIT("hello"), before, LUES_ADVICE_BEFORE, 0);
+    return 0;
+}
+
+static int32_t advise_after(const lues_api *api, lues_self self, const lues_at *at,
+                            const char *args, size_t args_len) {
+    (void)at, (void)args, (void)args_len;
+    api->advise(api, self, LIT("hello"), after, LUES_ADVICE_AFTER, 0);
+    return 0;
+}
+
+static int32_t advise_around(const lues_api *api, lues_self self, const lues_at *at,
+                             const char *args, size_t args_len) {
+    (void)at, (void)args, (void)args_len;
+    api->advise(api, self, LIT("hello"), around, LUES_ADVICE_AROUND, 0);
+    return 0;
+}
+
+/* advice_next outside any around. */
+static int32_t next_bare(const lues_api *api, lues_self self, const lues_at *at,
+                         const char *args, size_t args_len) {
+    int32_t          code = -1;
+    lues_call_status st;
+    (void)at;
+    st = api->advice_next(api, self, args, args_len, &code);
+    return said(api, self, st, code);
+}
+
+static int32_t advise_die(const lues_api *api, lues_self self, const lues_at *at,
+                          const char *args, size_t args_len) {
+    (void)at, (void)args, (void)args_len;
+    api->advise(api, self, LIT("hello"), die, LUES_ADVICE_AROUND, 0);
+    return 0;
+}
+
 LUES_MAIN {
     if (strcmp(api->app, "test") != 0 || api->app_version < 1) {
         return 1;
@@ -103,6 +173,11 @@ LUES_MAIN {
     api->register_command(api, self, LIT("define-bail"), LIT("define greet, bailing"), define_bail);
     api->register_command(api, self, LIT("fire"), LIT("run greet"), fire);
     api->register_command(api, self, LIT("join-n"), LIT("join greet"), join_n);
+    api->register_command(api, self, LIT("advise-before"), LIT("advise hello"), advise_before);
+    api->register_command(api, self, LIT("advise-after"), LIT("advise hello"), advise_after);
+    api->register_command(api, self, LIT("advise-around"), LIT("advise hello"), advise_around);
+    api->register_command(api, self, LIT("advise-die"), LIT("advise hello with a fault"), advise_die);
+    api->register_command(api, self, LIT("next-bare"), LIT("advice_next from a command"), next_bare);
     api->register_command(api, self, LIT("die"), LIT("dereference null"), die);
     return 0;
 }

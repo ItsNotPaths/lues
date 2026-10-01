@@ -22,9 +22,7 @@ cmd_call :: proc(k: ^Kernel, slot: int, focused: Maybe(docs.Id), args: string) -
         say(k, "that command's plugin is not loaded")
         return
     }
-    c := k.cmds[slot]
-    // (hole advice :tags (compose abi) :sev missing-system) the command's own fn always runs; another plugin cannot wrap it.
-    return fn_run(k, c.owner, c.fn, focused, args)
+    return advice_run(k, slot, focused, args)
 }
 
 // A command or a hook listener. What it submitted lands before this returns.
