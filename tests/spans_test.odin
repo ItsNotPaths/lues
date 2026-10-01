@@ -165,3 +165,19 @@ spans_open_test :: proc(t: ^testing.T) {
     testing.expect_value(t, looks[0], run(0, 5, 1))
     testing.expect_value(t, looks[1], run(5, 11, 2))
 }
+
+// An empty value is a value: it is not the run's own bytes, and it does not join a neighbour
+// that has none.
+@(test)
+spans_valued_test :: proc(t: ^testing.T) {
+    s: docs.Store
+    defer docs.store_destroy(&s, nil, nil)
+    id, slot := open(&s, "0123456789")
+    empty := docs.Span_Run{lo = 3, hi = 6, key = 7, valued = true}
+    docs.spans_apply(slot, {1, 0, 10, {data(0, 3, 7, ""), empty}})
+    docs.spans_apply(slot, {2, 0, 10, {data(8, 10, 7, "x")}}) // so the read merges, and could join
+
+    got := docs.spans_read(&s, id, 0, 10, {1, 2})
+    testing.expect_value(t, len(got), 3)
+    testing.expect_value(t, got[1], empty)
+}

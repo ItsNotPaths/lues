@@ -145,7 +145,7 @@ typedef struct {
     lues_token  key;  /* an interned name; 0 is a look */
     uint8_t     open; /* text typed at lo joins the run, as it always does at hi */
     char        _pad2[5];
-    const char *text; /* NULL: the run's own bytes are its value */
+    const char *text; /* NULL: the run's own bytes are its value. "" is an empty value */
     size_t      text_len;
 } lues_span;
 

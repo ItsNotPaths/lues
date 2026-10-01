@@ -20,7 +20,7 @@ Chan :: enum u8 {
 Chans :: distinct bit_set[Chan; u8]
 
 // `set` says which of fg, bg and attrs a look paints; the rest come from the layer below. A data
-// run paints nothing, and `text` is its value: empty means its own bytes.
+// run paints nothing. Its value is `text` when `valued`, even empty, and its own bytes when not.
 Span_Run :: struct {
     lo, hi: int,
     fg, bg: u32,
@@ -29,6 +29,7 @@ Span_Run :: struct {
     key:    Key,
     open:   bool, // text typed at `lo` joins the run, as it always does at `hi`
     text:   string, // owned by whoever holds the run
+    valued: bool,
 }
 
 Spans :: struct {
@@ -388,7 +389,7 @@ spans_push :: proc(out: ^[dynamic]Span_Run, run: Span_Run) {
         last := &out[len(out) - 1]
         if last.hi == run.lo && last.fg == run.fg && last.bg == run.bg &&
            last.attrs == run.attrs && last.set == run.set && last.key == run.key &&
-           last.open == run.open && last.text == run.text {
+           last.open == run.open && last.text == run.text && last.valued == run.valued {
             last.hi = run.hi
             return
         }

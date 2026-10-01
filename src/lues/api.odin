@@ -280,7 +280,7 @@ take_spans :: proc(k: ^Kernel, i: int, pub: ^Span_Pub) -> (out: docs.Spans, ok: 
         if data && sp.key != 0 {
             // Borrowed until store_submit copies it.
             run.key, run.open = docs.Key(sp.key), bool(sp.open)
-            run.text = string(sp.text[:sp.text_len]) if sp.text != nil else ""
+            run.text, run.valued = string(sp.text[:sp.text_len]) if sp.text != nil else "", sp.text != nil
             continue
         }
         set := transmute(docs.Chans)(sp.set & {.Fg, .Bg, .Attrs}) // stray bits are not channels

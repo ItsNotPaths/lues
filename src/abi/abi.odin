@@ -160,7 +160,7 @@ Span :: struct {
     key:      Token, // an interned name; 0 is a look
     open:     b8, // text typed at `lo` joins the run, as it always does at `hi`
     _:        [5]u8,
-    text:     [^]u8, // nil: the run's own bytes are its value
+    text:     [^]u8, // nil: the run's own bytes are its value. Non-nil and empty is an empty value
     text_len: c.size_t,
 }
 
