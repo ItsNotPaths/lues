@@ -1,243 +1,46 @@
 package lues
 
 import "core:c"
+import "../abi"
 import "../docs"
 
-// include/lues.h and tests/rustplug/src/sys.rs mirror this, by hand. tests/abi_test.odin
-// fails when a field's name or offset, or an enum value, differs.
+// The ABI under the kernel's own names (src/abi).
+API :: abi.API
+ENTRY :: abi.ENTRY
+Self :: abi.Self
+Doc_Handle :: abi.Doc_Handle
+Io :: abi.Io
+Kind :: abi.Kind
+NO_DOC :: abi.NO_DOC
+Token :: abi.Token
+Event :: abi.Event
+Call_Status :: abi.Call_Status
+Hook_Mode :: abi.Hook_Mode
+Join_How :: abi.Join_How
+Join_Flag :: abi.Join_Flag
+Join_Flags :: abi.Join_Flags
+Block :: abi.Block
+Piece :: abi.Piece
+Seg :: abi.Seg
+Snapshot :: abi.Snapshot
+At :: abi.At
+Event_Fn :: abi.Event_Fn
+Open_Fn :: abi.Open_Fn
+Close_Fn :: abi.Close_Fn
+Command_Fn :: abi.Command_Fn
+Entry_Fn :: abi.Entry_Fn
+Kind_Vt :: abi.Kind_Vt
+Kind_Spec :: abi.Kind_Spec
+Edit :: abi.Edit
+Span :: abi.Span
+Span_Pub :: abi.Span_Pub
+Submit_Flag :: abi.Submit_Flag
+Submit_Flags :: abi.Submit_Flags
+Api :: abi.Api
 
-API :: 4 // 2: fail. 3: adopt. 4: call, hooks, advice, doc-vars
-
-ENTRY :: "lues_main"
-
-Self :: distinct u64
-
-Doc_Handle :: distinct u64
-
-Io :: distinct u64
-
-Kind :: distinct u32
-
-// Resolves to no doc.
-NO_DOC :: Doc_Handle(max(u64))
-
-Token :: u16
-
-Event :: enum c.int32_t {
-    Chord,
-    Text,
-    Moved,
-    Io,
-    Io_End,
-}
-
-Call_Status :: enum c.int32_t {
-    Ran,
-    Absent, // no such command, or its plugin is gone
-    Failed, // it faulted, or calls nested too deep
-}
-
-Hook_Mode :: enum c.int32_t {
-    Emit, // every listener runs
-    Bail, // stops at the first non-zero exit
-}
-
-// What a join is: a hook listener, advice on a command, or a doc-var watch.
-Join_How :: enum c.int32_t {
-    Hook,
-    Before,
-    After,
-    Around, // runs the rest through next
-    Watch,
-}
-
-Join_Flag :: enum u32 {
-    Prepend = 0, // runs before, or outside, the joins already there
-}
-Join_Flags :: distinct bit_set[Join_Flag; u32]
-
-// --- the read view: the piece table, read in place ---
-
-Block :: struct {
-    ptr: [^]u8,
-    len: c.size_t,
-}
-
-Piece :: struct {
-    block:   c.ptrdiff_t,
-    off:     c.ptrdiff_t,
-    len:     c.ptrdiff_t,
-    doc_off: c.ptrdiff_t,
-}
-
-// A run of line starts: starts[at ..< at+n] + delta are lines first ..< first+n.
-Seg :: struct {
-    first: c.ptrdiff_t,
-    at:    c.ptrdiff_t,
-    n:     c.ptrdiff_t,
-    delta: c.ptrdiff_t,
-}
-
-// Kernel-allocated.
-Snapshot :: struct {
-    blocks:  [^]Block,
-    starts:  [^]c.ptrdiff_t,
-    pieces:  [^]Piece,
-    segs:    [^]Seg,
-    nblocks: c.size_t,
-    nstarts: c.size_t,
-    npieces: c.size_t,
-    nsegs:   c.size_t,
-    size:    c.size_t, // bytes
-    lines:   c.size_t,
-    gen:     u64,
-    doc:     Doc_Handle,
-    app:     rawptr,
-}
-
-At :: struct {
-    doc:  Doc_Handle,
-    inst: rawptr,
-    snap: ^Snapshot,
-    io:   Io,
-    code: c.int32_t,
-    _:    [4]u8,
-}
-
-Event_Fn :: #type proc "c" (api: ^Api, self: Self, at: ^At, ev: Event, text: [^]u8, len: c.size_t) -> c.int32_t
-Open_Fn :: #type proc "c" (api: ^Api, self: Self, doc: Doc_Handle, args: [^]u8, args_len: c.size_t) -> rawptr
-Close_Fn :: #type proc "c" (api: ^Api, self: Self, doc: Doc_Handle, inst: rawptr)
-Command_Fn :: #type proc "c" (api: ^Api, self: Self, at: ^At, args: [^]u8, args_len: c.size_t) -> c.int32_t
-Entry_Fn :: #type proc "c" (api: ^Api, self: Self) -> c.int32_t
-
-Kind_Vt :: struct {
-    open:  Open_Fn,
-    close: Close_Fn,
-    event: Event_Fn,
-}
-
-// Plugin-allocated, `size` first.
-Kind_Spec :: struct {
-    size:     c.size_t,
-    name:     [^]u8,
-    name_len: c.size_t,
-    ctx:      [^]u8,
-    ctx_len:  c.size_t,
-    vt:       Kind_Vt,
-}
-
-// --- the write side ---
-
-// Plugin-allocated, `size` first. Arrays stride by the first element's `size`.
-Edit :: struct {
-    size:     c.size_t,
-    lo:       c.size_t,
-    hi:       c.size_t,
-    text:     [^]u8,
-    text_len: c.size_t,
-    tag:      u32, // the app's
-    _:        [4]u8,
-}
-
-// Channels not in `set` come from the layer below.
-Span :: struct {
-    size:  c.size_t,
-    lo:    c.size_t,
-    hi:    c.size_t,
-    tok:   Token,
-    attrs: u8, // the app's bits
-    set:   docs.Chans,
-    _:     [4]u8,
-}
-
-// Replaces this plugin's runs in [lo, hi).
-Span_Pub :: struct {
-    size:   c.size_t,
-    lo:     c.size_t,
-    hi:     c.size_t,
-    spans:  [^]Span,
-    nspans: c.size_t,
-}
-
-Submit_Flag :: enum u32 {
-    Forget = 0, // derived bytes: nothing to undo
-    Join   = 1, // into the last undo step
-}
-Submit_Flags :: distinct bit_set[Submit_Flag; u32]
-
-// Kernel-allocated; grows at the end. The first field of the app's vtable.
-Api :: struct {
-    version:          u32,
-    app_version:      u32,
-    app:              cstring,
-    register_kind:    proc "c" (api: ^Api, self: Self, spec: ^Kind_Spec) -> Kind,
-    register_command: proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: c.size_t,
-                                doc: [^]u8, doc_len: c.size_t, fn: Command_Fn),
-    request_bind:     proc "c" (api: ^Api, self: Self, ctx: [^]u8, ctx_len: c.size_t,
-                                chord: [^]u8, chord_len: c.size_t,
-                                line: [^]u8, line_len: c.size_t),
-    request_config:   proc "c" (api: ^Api, self: Self, section: [^]u8, section_len: c.size_t,
-                                key: [^]u8, key_len: c.size_t,
-                                value: [^]u8, value_len: c.size_t),
-    register_token:   proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: c.size_t) -> Token,
-    register_watch:   proc "c" (api: ^Api, self: Self, fn: Event_Fn),
-    // Copied at the call; lands at the drain or is dropped whole.
-    submit:           proc "c" (api: ^Api, self: Self, doc: Doc_Handle, gen: u64,
-                                edits: [^]Edit, nedits: c.size_t, spans: ^Span_Pub,
-                                flags: Submit_Flags),
-    snapshot:         proc "c" (api: ^Api, self: Self, doc: Doc_Handle) -> ^Snapshot,
-    release:          proc "c" (api: ^Api, self: Self, snap: ^Snapshot),
-    message:          proc "c" (api: ^Api, self: Self, text: [^]u8, text_len: c.size_t),
-    io_spawn:         proc "c" (api: ^Api, self: Self, doc: Doc_Handle, argv: [^]cstring,
-                                nargv: c.size_t, cwd: [^]u8, cwd_len: c.size_t) -> Io,
-    io_write:         proc "c" (api: ^Api, self: Self, io: Io, bytes: [^]u8, len: c.size_t),
-    io_watch:         proc "c" (api: ^Api, self: Self, doc: Doc_Handle, path: [^]u8,
-                                path_len: c.size_t) -> Io,
-    io_fd:            proc "c" (api: ^Api, self: Self, doc: Doc_Handle, fd: c.int32_t) -> Io,
-    io_close:         proc "c" (api: ^Api, self: Self, io: Io),
-    // API 2. Unloads the caller the way a fault does, and never returns.
-    fail:             proc "c" (api: ^Api, self: Self, msg: [^]u8, msg_len: c.size_t) -> !,
-    // API 3. 0 when faults in the object holding addr are the plugin's from now on.
-    adopt:            proc "c" (api: ^Api, self: Self, addr: rawptr) -> c.int32_t,
-    // API 4. Runs a command by name inside this call; `code` gets its exit when it ran.
-    call:             proc "c" (api: ^Api, self: Self, doc: Doc_Handle, name: [^]u8,
-                                name_len: c.size_t, args: [^]u8, args_len: c.size_t,
-                                code: ^c.int32_t) -> Call_Status,
-    // API 4. A hook point is the definer's to run; anyone may join it, before or after.
-    hook_define:      proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: c.size_t,
-                                mode: Hook_Mode) -> c.int32_t,
-    hook_add:         proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: c.size_t,
-                                fn: Command_Fn, flags: Join_Flags),
-    hook_run:         proc "c" (api: ^Api, self: Self, doc: Doc_Handle, name: [^]u8,
-                                name_len: c.size_t, args: [^]u8, args_len: c.size_t,
-                                code: ^c.int32_t) -> Call_Status,
-    // API 4. Advice joins a command by name, as hook_add joins a hook.
-    advise:           proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: c.size_t,
-                                fn: Command_Fn, how: Join_How, flags: Join_Flags),
-    // API 4. From around advice: runs the rest of the chain, with these args.
-    advice_next:      proc "c" (api: ^Api, self: Self, args: [^]u8, args_len: c.size_t,
-                                code: ^c.int32_t) -> Call_Status,
-    // API 4. Doc-vars: the definer sets, anyone gets and watches. 0 when done.
-    var_define:       proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: c.size_t) -> c.int32_t,
-    var_set:          proc "c" (api: ^Api, self: Self, doc: Doc_Handle, name: [^]u8,
-                                name_len: c.size_t, value: [^]u8, value_len: c.size_t) -> c.int32_t,
-    // The value's length, with as much as fits copied into buf; -1 when it has none.
-    var_get:          proc "c" (api: ^Api, self: Self, doc: Doc_Handle, name: [^]u8,
-                                name_len: c.size_t, buf: [^]u8, cap: c.size_t) -> c.ptrdiff_t,
-    var_watch:        proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: c.size_t, fn: Command_Fn),
-}
-
-#assert(size_of(Block) == 16)
-#assert(size_of(Piece) == 32)
-#assert(size_of(Seg) == 32)
-#assert(size_of(Snapshot) == 104)
-#assert(size_of(At) == 40)
-#assert(size_of(Edit) == 48)
-#assert(size_of(Span) == 32)
-#assert(size_of(Span_Pub) == 40)
-#assert(size_of(Kind_Vt) == 24)
-#assert(size_of(Kind_Spec) == 64)
-#assert(size_of(Api) == 232)
+// A run's channels cross as abi's set; the bits are docs'.
+#assert(int(abi.Chan.Fg) == int(docs.Chan.Fg) && int(abi.Chan.Bg) == int(docs.Chan.Bg) &&
+        int(abi.Chan.Attrs) == int(docs.Chan.Attrs) && len(abi.Chan) == len(docs.Chan))
 
 pack :: proc "contextless" (lo, hi: u32) -> u64 {
     return u64(lo) | u64(hi) << 32

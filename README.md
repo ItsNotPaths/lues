@@ -66,12 +66,13 @@ odin test tests
 ```
 
 The tests build the plugins in `tests/` (C, C++ and Rust) and load them. `tests/abi_test.odin`
-compares `lues.h` and the Rust mirror with `src/lues/abi.odin`.
+compares `lues.h` and the Rust mirror with `src/abi/abi.odin`.
 
 ## Layout
 
 | Path | Contents |
 |---|---|
+| `src/abi` | the plugin ABI alone, for a plugin in Odin to import |
 | `src/lues` | the kernel: loader, api, dispatch, faults, joins, doc-vars |
 | `src/docs`, `src/pt` | the document store and the piece table |
 | `src/work`, `src/wake` | the io worker, and the wakeup of the host's frame loop |

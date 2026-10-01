@@ -1,4 +1,4 @@
-/* Mirrors src/lues/abi.odin. An app header includes this and appends its calls after
+/* Mirrors src/abi/abi.odin. An app header includes this and appends its calls after
  * `lues_api` in a struct of its own. */
 #ifndef LUES_H
 #define LUES_H

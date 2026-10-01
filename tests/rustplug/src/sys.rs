@@ -1,4 +1,4 @@
-//! lues.h, declared by hand. tests/abi_test.odin checks it against abi.odin.
+//! lues.h, declared by hand. tests/abi_test.odin checks it against src/abi/abi.odin.
 
 use std::ffi::{c_char, c_void};
 

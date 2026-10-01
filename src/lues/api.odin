@@ -275,7 +275,7 @@ take_spans :: proc(k: ^Kernel, i: int, pub: ^Span_Pub) -> (out: docs.Spans, ok: 
     list := make([]docs.Span_Run, pub.nspans, context.temp_allocator)
     for &run, j in list {
         sp := elem(Span, pub.spans, step, j)
-        set := sp.set & {.Fg, .Bg, .Attrs} // stray bits are not channels
+        set := transmute(docs.Chans)(sp.set & {.Fg, .Bg, .Attrs}) // stray bits are not channels
         run = {
             lo    = off(sp.lo),
             hi    = off(sp.hi),

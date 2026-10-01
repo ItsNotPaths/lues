@@ -8,25 +8,24 @@ import "core:reflect"
 import "core:slice"
 import "core:strings"
 import "core:testing"
-import "../src/docs"
-import lues "../src/lues"
+import "../src/abi"
 
 // The structs lues.h and rustplug's sys.rs mirror. Each mirror prints its own layout, by the
 // field names abi.odin uses, so a field missing from a mirror fails its compile and one that
 // moved fails the compare. Rust mirrors only the structs it uses.
 @(private = "file")
 ABI_TYPES := []typeid {
-    lues.Block,
-    lues.Piece,
-    lues.Seg,
-    lues.Snapshot,
-    lues.At,
-    lues.Kind_Vt,
-    lues.Kind_Spec,
-    lues.Edit,
-    lues.Span,
-    lues.Span_Pub,
-    lues.Api,
+    abi.Block,
+    abi.Piece,
+    abi.Seg,
+    abi.Snapshot,
+    abi.At,
+    abi.Kind_Vt,
+    abi.Kind_Spec,
+    abi.Edit,
+    abi.Span,
+    abi.Span_Pub,
+    abi.Api,
 }
 
 // The enums lues.h mirrors: a value's C name is the prefix plus its name in caps, and a flag's
@@ -41,13 +40,13 @@ Abi_Enum :: struct {
 
 @(private = "file")
 ABI_ENUMS := []Abi_Enum {
-    {lues.Event, "LUES_EVENT_", false, nil},
-    {lues.Call_Status, "LUES_CALL_", false, nil},
-    {lues.Hook_Mode, "LUES_HOOK_", false, nil},
-    {lues.Join_How, "LUES_ADVICE_", false, {"Hook", "Watch"}},
-    {lues.Join_Flag, "LUES_", true, nil},
-    {lues.Submit_Flag, "LUES_SUBMIT_", true, nil},
-    {docs.Chan, "LUES_CHAN_", true, nil},
+    {abi.Event, "LUES_EVENT_", false, nil},
+    {abi.Call_Status, "LUES_CALL_", false, nil},
+    {abi.Hook_Mode, "LUES_HOOK_", false, nil},
+    {abi.Join_How, "LUES_ADVICE_", false, {"Hook", "Watch"}},
+    {abi.Join_Flag, "LUES_", true, nil},
+    {abi.Submit_Flag, "LUES_SUBMIT_", true, nil},
+    {abi.Chan, "LUES_CHAN_", true, nil},
 }
 
 @(test)
@@ -64,7 +63,7 @@ abi_test :: proc(t: ^testing.T) {
     for b in ([]^strings.Builder{&want, &want_rs, &c, &rs}) {
         strings.builder_init(b, context.temp_allocator)
     }
-    fmt.sbprintf(&want, "api %d\n", lues.API)
+    fmt.sbprintf(&want, "api %d\n", abi.API)
     fmt.sbprint(&c, "#include <stddef.h>\n#include <stdio.h>\n#include \"lues.h\"\nint main(void) {\n")
     fmt.sbprint(&c, "    printf(\"api %d\\n\", LUES_API);\n")
     fmt.sbprintf(&rs, "#![allow(dead_code)]\n#[path = %q]\nmod sys;\nuse std::mem::{{offset_of, size_of}};\nfn main() {{\n", sys_rs)
@@ -92,7 +91,7 @@ abi_test :: proc(t: ^testing.T) {
             }
         }
     }
-    fmt.sbprintf(&want, "NO_DOC %d\n", u64(lues.NO_DOC))
+    fmt.sbprintf(&want, "NO_DOC %d\n", u64(abi.NO_DOC))
     fmt.sbprint(&c, "    printf(\"NO_DOC %llu\\n\", (unsigned long long)LUES_NO_DOC);\n")
     for e in ABI_ENUMS {
         name := type_name(e.T)
@@ -123,7 +122,7 @@ abi_test :: proc(t: ^testing.T) {
     }
 }
 
-// "Kind_Spec" for lues.Kind_Spec.
+// "Kind_Spec" for abi.Kind_Spec.
 @(private = "file")
 type_name :: proc(T: typeid) -> string {
     return type_info_of(T).variant.(runtime.Type_Info_Named).name
