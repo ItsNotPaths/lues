@@ -5,8 +5,10 @@ import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:reflect"
+import "core:slice"
 import "core:strings"
 import "core:testing"
+import "../src/docs"
 import lues "../src/lues"
 
 // The structs lues.h and rustplug's sys.rs mirror. Each mirror prints its own layout, by the
@@ -25,6 +27,27 @@ ABI_TYPES := []typeid {
     lues.Span,
     lues.Span_Pub,
     lues.Api,
+}
+
+// The enums lues.h mirrors: a value's C name is the prefix plus its name in caps, and a flag's
+// C value is its bit. Rust declares none.
+@(private = "file")
+Abi_Enum :: struct {
+    T:      typeid,
+    prefix: string,
+    flag:   bool,
+    skip:   []string, // kernel-side only
+}
+
+@(private = "file")
+ABI_ENUMS := []Abi_Enum {
+    {lues.Event, "LUES_EVENT_", false, nil},
+    {lues.Call_Status, "LUES_CALL_", false, nil},
+    {lues.Hook_Mode, "LUES_HOOK_", false, nil},
+    {lues.Join_How, "LUES_ADVICE_", false, {"Hook", "Watch"}},
+    {lues.Join_Flag, "LUES_", true, nil},
+    {lues.Submit_Flag, "LUES_SUBMIT_", true, nil},
+    {docs.Chan, "LUES_CHAN_", true, nil},
 }
 
 @(test)
@@ -67,6 +90,20 @@ abi_test :: proc(t: ^testing.T) {
                 fmt.sbprintf(&want_rs, "%s %s %d\n", name, f.name, f.offset)
                 fmt.sbprintf(&rs, "    println!(\"%s %s {{}}\", offset_of!(sys::%s, r#%s));\n", name, f.name, rs_name, f.name)
             }
+        }
+    }
+    fmt.sbprintf(&want, "NO_DOC %d\n", u64(lues.NO_DOC))
+    fmt.sbprint(&c, "    printf(\"NO_DOC %llu\\n\", (unsigned long long)LUES_NO_DOC);\n")
+    for e in ABI_ENUMS {
+        name := type_name(e.T)
+        for f in reflect.enum_fields_zipped(e.T) {
+            if slice.contains(e.skip, f.name) {
+                continue
+            }
+            value := i64(1) << u64(f.value) if e.flag else i64(f.value)
+            c_name := strings.concatenate({e.prefix, strings.to_upper(f.name, context.temp_allocator)}, context.temp_allocator)
+            fmt.sbprintf(&want, "%s %s %d\n", name, f.name, value)
+            fmt.sbprintf(&c, "    printf(\"%s %s %%lld\\n\", (long long)%s);\n", name, f.name, c_name)
         }
     }
     fmt.sbprint(&c, "    return 0;\n}\n")

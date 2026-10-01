@@ -4,7 +4,7 @@ import "core:c"
 import "../docs"
 
 // include/lues.h and tests/rustplug/src/sys.rs mirror this, by hand. tests/abi_test.odin
-// fails when a field's name or offset differs.
+// fails when a field's name or offset, or an enum value, differs.
 
 API :: 4 // 2: fail. 3: adopt. 4: call, hooks, advice, doc-vars
 
