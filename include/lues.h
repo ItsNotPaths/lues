@@ -189,17 +189,22 @@ typedef struct lues_api {
     int32_t (*adopt)(const struct lues_api *api, lues_self self, const void *addr);
 } lues_api;
 
-_Static_assert(sizeof(lues_block) == 16, "lues_block");
-_Static_assert(sizeof(lues_piece) == 32, "lues_piece");
-_Static_assert(sizeof(lues_seg) == 32, "lues_seg");
-_Static_assert(sizeof(lues_snapshot) == 104, "lues_snapshot");
-_Static_assert(sizeof(lues_at) == 40, "lues_at");
-_Static_assert(sizeof(lues_edit) == 48, "lues_edit");
-_Static_assert(sizeof(lues_span) == 32, "lues_span");
-_Static_assert(sizeof(lues_span_pub) == 40, "lues_span_pub");
-_Static_assert(sizeof(lues_kind_vt) == 24, "lues_kind_vt");
-_Static_assert(sizeof(lues_kind_spec) == 64, "lues_kind_spec");
-_Static_assert(sizeof(lues_api) == 152, "lues_api");
+#ifdef __cplusplus
+#define LUES_SIZE(t, n) static_assert(sizeof(t) == n, #t)
+#else
+#define LUES_SIZE(t, n) _Static_assert(sizeof(t) == n, #t)
+#endif
+LUES_SIZE(lues_block, 16);
+LUES_SIZE(lues_piece, 32);
+LUES_SIZE(lues_seg, 32);
+LUES_SIZE(lues_snapshot, 104);
+LUES_SIZE(lues_at, 40);
+LUES_SIZE(lues_edit, 48);
+LUES_SIZE(lues_span, 32);
+LUES_SIZE(lues_span_pub, 40);
+LUES_SIZE(lues_kind_vt, 24);
+LUES_SIZE(lues_kind_spec, 64);
+LUES_SIZE(lues_api, 152);
 
 /* Non-zero refuses the load and reverts what you registered. */
 #define LUES_MAIN LUES_EXPORT int32_t lues_main(const lues_api *api, lues_self self)
