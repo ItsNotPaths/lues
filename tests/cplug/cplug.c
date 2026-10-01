@@ -37,6 +37,13 @@ static int32_t sortboom(const lues_api *api, lues_self self, const lues_at *at, 
     return 0;
 }
 
+/* Faults inside libc's strlen, called straight from the plugin. */
+static int32_t strboom(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                       size_t args_len) {
+    (void)api, (void)self, (void)at, (void)args, (void)args_len;
+    return (int32_t)strlen((const char *)NOWHERE);
+}
+
 /* Five seconds, bounded like hang. */
 static int spent(const struct timespec *from) {
     struct timespec now;
@@ -443,6 +450,7 @@ LUES_MAIN {
     api->register_command(api, self, LIT("boom"), LIT("dereference null"), boom);
     api->register_command(api, self, LIT("hang"), LIT("stop returning"), hang);
     api->register_command(api, self, LIT("sortboom"), LIT("fault under qsort"), sortboom);
+    api->register_command(api, self, LIT("strboom"), LIT("fault in strlen"), strboom);
     api->register_command(api, self, LIT("sorthang"), LIT("stop returning under qsort"), sorthang);
     api->register_command(api, self, LIT("churn"), LIT("stop returning in malloc"), churn);
     api->register_command(api, self, LIT("fail"), LIT("fail with the args"), fail);

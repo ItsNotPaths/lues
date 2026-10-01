@@ -105,10 +105,14 @@ g_installed: bool
 @(private = "file")
 g_kernel: uintptr // this object's base: the walk stops at the dispatch frame
 
+@(private = "file")
+g_libc: uintptr // blame looks through its frames to the caller
+
 // --- install ---
 
 // Handlers are per process, the alt stack per thread, so a second caller only adds its stack.
-// (hole net-kept :tags fault :sev wrong-behavior) nothing notices a plugin's sigaction over these handlers; its next fault kills the process unblamed.
+// (hole interpose :tags (fault abi) :sev missing-system) liblues exports no sigaction or pthread_create of its own, so a plugin's calls reach libc; untested whether an export wins for dlopened plugins in every link order.
+// (hole net-kept :tags fault :sev wrong-behavior :needs interpose) nothing stops or notices a plugin's sigaction over these handlers; its next fault kills the process unblamed.
 fault_install :: proc() -> bool {
     // Keep an existing alt stack: ASan unmaps its own at thread exit.
     old: posix.stack_t
@@ -137,6 +141,7 @@ fault_install :: proc() -> bool {
     warm: [1]rawptr
     backtrace(raw_data(warm[:]), 1)
     g_kernel = fault_object_base(rawptr(fault_install))
+    g_libc = fault_object_base(rawptr(gnu_get_libc_version()))
     g_installed = true
     return true
 }
@@ -294,10 +299,10 @@ fault_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr
         die(sig, f.name[:f.n])
         return
     }
-    // (hole leaf-libc-faults :tags fault :sev missing-system) a fault in memcpy, strlen or another lock-free libc leaf the plugin called kills the process.
-    // (hole plugin-threads :tags fault :sev missing-system) a thread a plugin started has no frame, so a fault on it dies unblamed.
+    // (hole leaf-libc-faults :tags fault :sev missing-system) no table of libc's lock-free leaves from its debug symbols, so a fault in memcpy or strlen the plugin called is not unwound.
+    // (hole plugin-threads :tags fault :sev missing-system :needs interpose) a thread a plugin started has no frame, so a fault on it dies unblamed.
     if !in_plugin(f, pc) {
-        die(sig, nil)
+        die(sig, blamed(f, n, at))
         return
     }
     // Its fault, under code that is not its own, which may hold a lock the jump would leave held.
@@ -399,6 +404,20 @@ owned :: proc "contextless" (f: ^Frame, n, at: int) -> bool {
         }
     }
     return true
+}
+
+// Who called into libc when it faulted: the plugin if the first frame past libc's is its own.
+@(private = "file")
+blamed :: proc "contextless" (f: ^Frame, n, at: int) -> []u8 {
+    if f == nil || at < 0 {
+        return nil
+    }
+    for o in g_objs[at:n] {
+        if o.base != g_libc {
+            return f.name[:f.n] if mine(f, o.base) else nil
+        }
+    }
+    return nil
 }
 
 // The frame under the walk's own kernel frames: whoever called into the api.

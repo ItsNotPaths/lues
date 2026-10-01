@@ -98,6 +98,12 @@ foreign_test :: proc(t: ^testing.T) {
     crash(t, "foreign", "sortboom", .SIGSEGV)
 }
 
+// A fault in libc that the plugin called is not unwound, but it is blamed on the plugin.
+@(test)
+libc_blame_test :: proc(t: ^testing.T) {
+    crash(t, "libc-blame", "strboom", .SIGSEGV)
+}
+
 // The trace's first line is the plugin's own object, with an offset.
 @(test)
 trace_test :: proc(t: ^testing.T) {
