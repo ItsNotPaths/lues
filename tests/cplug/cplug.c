@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE /* syscall */
 
+#include <assert.h>
 #include <dlfcn.h>
 #include <pthread.h>
 #include <setjmp.h>
@@ -38,6 +39,28 @@ static int32_t sortboom(const lues_api *api, lues_self self, const lues_at *at, 
     int two[2] = {2, 1};
     (void)api, (void)self, (void)at, (void)args, (void)args_len;
     qsort(two, 2, sizeof two[0], boom_cmp);
+    return 0;
+}
+
+/* A failed C assert: abort, called straight from the plugin. */
+static int32_t assert_cmd(const lues_api *api, lues_self self, const lues_at *at,
+                          const char *args, size_t args_len) {
+    (void)api, (void)self, (void)at, (void)args;
+    assert(args_len == 12345);
+    return 0;
+}
+
+/* abort from a qsort comparator: libc's sort frames sit under it. */
+static int abort_cmp(const void *a, const void *b) {
+    (void)a, (void)b;
+    abort();
+}
+
+static int32_t sortabort(const lues_api *api, lues_self self, const lues_at *at,
+                         const char *args, size_t args_len) {
+    int two[2] = {2, 1};
+    (void)api, (void)self, (void)at, (void)args, (void)args_len;
+    qsort(two, 2, sizeof two[0], abort_cmp);
     return 0;
 }
 
@@ -265,6 +288,26 @@ static int32_t grammar(const lues_api *api, lues_self self, const char *args, si
         return 1;
     }
     return scan(NOWHERE);
+}
+
+/* `gabort <path>`: the unadopted grammar calls abort. */
+static int32_t gabort(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                      size_t args_len) {
+    char  path[256];
+    void *lib;
+    void (*abort_fn)(void);
+    (void)api, (void)self, (void)at;
+    if (args_len >= sizeof path) {
+        return 1;
+    }
+    memcpy(path, args, args_len);
+    path[args_len] = 0;
+    lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (lib == NULL || (*(void **)&abort_fn = dlsym(lib, "grammar_abort")) == NULL) {
+        return 1;
+    }
+    abort_fn();
+    return 0;
 }
 
 static int32_t scan(const lues_api *api, lues_self self, const lues_at *at, const char *args,
@@ -573,6 +616,9 @@ LUES_MAIN {
     api->register_command(api, self, LIT("hang"), LIT("stop returning"), hang);
     api->register_command(api, self, LIT("sortboom"), LIT("fault under qsort"), sortboom);
     api->register_command(api, self, LIT("strboom"), LIT("fault in strlen"), strboom);
+    api->register_command(api, self, LIT("assert"), LIT("fail a C assert"), assert_cmd);
+    api->register_command(api, self, LIT("sortabort"), LIT("abort under qsort"), sortabort);
+    api->register_command(api, self, LIT("gabort"), LIT("abort in the grammar"), gabort);
     api->register_command(api, self, LIT("threadboom"), LIT("fault on a thread"), threadboom);
     api->register_command(api, self, LIT("thread"), LIT("start a thread that runs on"), thread_cmd);
     api->register_command(api, self, LIT("catch"), LIT("catch a grammar fault itself"), catch_cmd);

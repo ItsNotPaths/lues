@@ -44,8 +44,7 @@ Dl_Info :: struct {
     dli_saddr: rawptr,
 }
 
-// (hole abort-catch :tags fault :sev missing-system) no SIGABRT: a C assert or C++ std::terminate in a plugin kills the process.
-FAULT_SIGNALS :: [?]posix.Signal{.SIGSEGV, .SIGBUS, .SIGILL, .SIGFPE}
+FAULT_SIGNALS :: [?]posix.Signal{.SIGSEGV, .SIGBUS, .SIGILL, .SIGFPE, .SIGABRT}
 
 PLUG_HANG_MS :: 5000
 
@@ -112,6 +111,9 @@ g_kernel: uintptr // this object's base: the walk stops at the dispatch frame
 @(private = "file")
 g_libc: uintptr // blame looks through its frames to the caller
 
+@(private = "file")
+g_abort_safe: bool // this glibc's abort raises before it takes any lock
+
 // --- install ---
 
 // Handlers are per process, the alt stack per thread, so a second caller only adds its stack.
@@ -148,6 +150,7 @@ fault_install :: proc() -> bool {
     backtrace(raw_data(warm[:]), 1)
     g_kernel = fault_object_base(rawptr(fault_install))
     g_libc = fault_object_base(rawptr(gnu_get_libc_version()))
+    g_abort_safe = glibc_at_least(2, 41)
     g_installed = true
     return true
 }
@@ -518,13 +521,21 @@ fault_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr
         g_guard.traced = trace_write(n, signal_name(sig))
         unwind(signal_name(sig))
     }
+    // abort, called on purpose; from outside the process it is not the plugin's.
+    aborted := sig == .SIGABRT && info.si_pid == posix.getpid()
+    if aborted && g_abort_safe && f != nil {
+        if c := past_libc(n, at); c < n && mine(f, g_objs[c].base) && owned(f, n, c) {
+            g_guard.traced = trace_write(n, signal_name(sig))
+            unwind(signal_name(sig))
+        }
+    }
     if chained(f, sig, info, uc) {
         return
     }
     g_guard.traced = trace_write(n, signal_name(sig))
     // Its fault under code that is not its own, which may hold a lock the jump would leave
-    // held; or a fault in libc that it called.
-    die(sig, f.name[:f.n] if in_plugin(f, pc) else blamed(f, n, at))
+    // held; a fault in libc that it called; or its abort past other code (std::terminate).
+    die(sig, f.name[:f.n] if in_plugin(f, pc) else blamed(f, n, at, aborted))
 }
 
 // The plugin's own handler, for a fault lues would die on (wasmtime's, for a trap in its JIT
@@ -663,17 +674,53 @@ owned :: proc "contextless" (f: ^Frame, n, at: int) -> bool {
 }
 
 // Who called into libc when it faulted: the plugin if the first frame past libc's is its own.
+// An abort is called on purpose, so for one any frame of the plugin's over dispatch counts.
 @(private = "file")
-blamed :: proc "contextless" (f: ^Frame, n, at: int) -> []u8 {
+blamed :: proc "contextless" (f: ^Frame, n, at: int, aborted: bool) -> []u8 {
     if f == nil || at < 0 {
         return nil
     }
     for o in g_objs[at:n] {
-        if o.base != g_libc {
-            return f.name[:f.n] if mine(f, o.base) else nil
+        if mine(f, o.base) {
+            return f.name[:f.n]
+        }
+        if o.base == g_kernel || (o.base != g_libc && !aborted) {
+            return nil
         }
     }
     return nil
+}
+
+// The first frame from `at` that is not libc's; n for none.
+@(private = "file")
+past_libc :: proc "contextless" (n, at: int) -> int {
+    if at < 0 {
+        return n
+    }
+    c := at
+    for c < n && g_objs[c].base == g_libc {
+        c += 1
+    }
+    return c
+}
+
+// From 2.41 glibc's abort raises SIGABRT before anything else; before, it took a lock first.
+@(private = "file")
+glibc_at_least :: proc "contextless" (major, minor: int) -> bool {
+    v := string(gnu_get_libc_version())
+    num :: proc "contextless" (s: ^string) -> (n: int) {
+        for len(s^) > 0 && s[0] >= '0' && s[0] <= '9' {
+            n = n * 10 + int(s[0] - '0')
+            s^ = s[1:]
+        }
+        if len(s^) > 0 {
+            s^ = s[1:] // the dot
+        }
+        return
+    }
+    got_major := num(&v)
+    got_minor := num(&v)
+    return got_major > major || (got_major == major && got_minor >= minor)
 }
 
 // The frame under the walk's own kernel frames: whoever called into the api.
@@ -976,6 +1023,8 @@ signal_name :: proc "contextless" (sig: posix.Signal) -> string {
         return "faulted (SIGILL)"
     case .SIGFPE:
         return "faulted (SIGFPE)"
+    case .SIGABRT:
+        return "aborted"
     }
     return "faulted"
 }

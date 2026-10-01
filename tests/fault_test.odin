@@ -203,6 +203,39 @@ chain_test :: proc(t: ^testing.T) {
     testing.expect(t, run(&k, "hello"))
 }
 
+// A failed C assert unwinds like fail: unloaded and named, not quarantined.
+@(test)
+assert_test :: proc(t: ^testing.T) {
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Api_Box
+    defer lues.kernel_destroy(&k)
+    i, ok := plug_host(t, &k, &box, &said, "assert")
+    if !ok {
+        return
+    }
+
+    testing.expect(t, !run(&k, "assert"))
+    testing.expect_value(t, k.plugs[i].state, lues.Plug_State.Faulted)
+    testing.expect(t, strings.contains(strings.to_string(said), "cplug aborted"), strings.to_string(said))
+    testing.expect(t, !lues.quarantined(&k, "cplug"))
+    testing.expect(t, lues.loader_load(&k, lues.loader_path(&k, "cplug")), strings.to_string(said))
+    testing.expect(t, run(&k, "hello"))
+}
+
+// An abort with libc's sort frames under it is not unwound, but it is blamed on the plugin.
+@(test)
+abort_foreign_test :: proc(t: ^testing.T) {
+    crash(t, "abort-foreign", "sortabort", .SIGABRT)
+}
+
+// An abort another object called (as std::terminate does) dies, blamed on the plugin that
+// called into it: an abort is on purpose, unlike a fault in an unadopted object.
+@(test)
+abort_third_party_test :: proc(t: ^testing.T) {
+    crash(t, "abort-third-party", "gabort", .SIGABRT)
+}
+
 // The trace's first line is the plugin's own object, with an offset.
 @(test)
 trace_test :: proc(t: ^testing.T) {
