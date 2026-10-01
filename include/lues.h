@@ -29,6 +29,13 @@ typedef enum {
 } lues_call_status;
 
 typedef enum {
+    LUES_HOOK_EMIT = 0, /* every listener runs */
+    LUES_HOOK_BAIL = 1  /* stops at the first non-zero exit */
+} lues_hook_mode;
+
+#define LUES_HOOK_PREPEND (1u << 0) /* runs before the listeners already there */
+
+typedef enum {
     LUES_EVENT_CHORD  = 0,
     LUES_EVENT_TEXT   = 1,
     LUES_EVENT_MOVED  = 2,
@@ -201,6 +208,18 @@ typedef struct lues_api {
     lues_call_status (*call)(const struct lues_api *api, lues_self self, lues_doc doc,
                              const char *name, size_t name_len,
                              const char *args, size_t args_len, int32_t *code);
+
+    /* LUES_API 4. A hook point is yours to run once defined; 0 when defined. Anyone may join
+     * it, before or after it is defined. A listener gets `args` as a command does. */
+    int32_t (*hook_define)(const struct lues_api *api, lues_self self,
+                           const char *name, size_t name_len, lues_hook_mode mode);
+    void (*hook_add)(const struct lues_api *api, lues_self self, const char *name,
+                     size_t name_len, lues_command_fn fn, uint32_t flags);
+    /* `code` gets 0, or under BAIL the exit that stopped it. ABSENT: not a point you defined.
+     * A listener that faults is unloaded and the rest still run. */
+    lues_call_status (*hook_run)(const struct lues_api *api, lues_self self, lues_doc doc,
+                                 const char *name, size_t name_len,
+                                 const char *args, size_t args_len, int32_t *code);
 } lues_api;
 
 #ifdef __cplusplus
@@ -218,7 +237,7 @@ LUES_SIZE(lues_span, 32);
 LUES_SIZE(lues_span_pub, 40);
 LUES_SIZE(lues_kind_vt, 24);
 LUES_SIZE(lues_kind_spec, 64);
-LUES_SIZE(lues_api, 160);
+LUES_SIZE(lues_api, 184);
 
 /* Non-zero refuses the load and reverts what you registered. */
 #define LUES_MAIN LUES_EXPORT int32_t lues_main(const lues_api *api, lues_self self)

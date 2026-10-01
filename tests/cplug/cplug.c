@@ -617,6 +617,48 @@ static int32_t tok(const lues_api *api, lues_self self, const lues_at *at, const
     return 0;
 }
 
+/* Listeners on the `greet` hook: each says its letter and the args, and exits with a digit. */
+static int32_t greet_as(const lues_api *api, lues_self self, char who, const char *args,
+                        size_t args_len) {
+    char buf[64];
+    int  n = snprintf(buf, sizeof buf, "%c %.*s", who, (int)args_len, args);
+    api->message(api, self, buf, (size_t)n);
+    return args_len == 1 ? args[0] - '0' : 0;
+}
+
+static int32_t greet_a(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                       size_t args_len) {
+    (void)at;
+    return greet_as(api, self, 'a', args, args_len);
+}
+
+static int32_t greet_b(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                       size_t args_len) {
+    (void)at;
+    return greet_as(api, self, 'b', args, args_len);
+}
+
+static int32_t join_a(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                      size_t args_len) {
+    (void)at, (void)args, (void)args_len;
+    api->hook_add(api, self, LIT("greet"), greet_a, 0);
+    return 0;
+}
+
+static int32_t join_b_first(const lues_api *api, lues_self self, const lues_at *at,
+                            const char *args, size_t args_len) {
+    (void)at, (void)args, (void)args_len;
+    api->hook_add(api, self, LIT("greet"), greet_b, LUES_HOOK_PREPEND);
+    return 0;
+}
+
+static int32_t join_boom(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                         size_t args_len) {
+    (void)at, (void)args, (void)args_len;
+    api->hook_add(api, self, LIT("greet"), boom, 0);
+    return 0;
+}
+
 LUES_MAIN {
     if (strcmp(api->app, "test") != 0) {
         return 1;
@@ -666,6 +708,9 @@ LUES_MAIN {
     api->register_command(api, self, LIT("count"), LIT("say how many times it ran"), count);
     api->register_command(api, self, LIT("scan"), LIT("fault in a dlopened grammar"), scan);
     api->register_command(api, self, LIT("adopt"), LIT("adopt a grammar, then fault in it"), adopt);
+    api->register_command(api, self, LIT("join-a"), LIT("join greet"), join_a);
+    api->register_command(api, self, LIT("join-b-first"), LIT("join greet, first"), join_b_first);
+    api->register_command(api, self, LIT("join-boom"), LIT("join greet with a fault"), join_boom);
     api->register_command(api, self, LIT("adoptk"), LIT("adopt the kernel's object"), adoptk);
     return 0;
 }

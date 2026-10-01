@@ -16,7 +16,6 @@ cmd_run :: proc(k: ^Kernel, slot: int, focused: Maybe(docs.Id), args: string) ->
     return ran && code == 0
 }
 
-// What it submitted lands before this returns.
 cmd_call :: proc(k: ^Kernel, slot: int, focused: Maybe(docs.Id), args: string) -> (code: i32, ran: bool) {
     context = k.ctx
     if slot < 0 || slot >= len(k.cmds) || k.cmds[slot].owner < 0 {
@@ -24,13 +23,18 @@ cmd_call :: proc(k: ^Kernel, slot: int, focused: Maybe(docs.Id), args: string) -
         return
     }
     c := k.cmds[slot]
+    // (hole advice :tags (compose abi) :sev missing-system) the command's own fn always runs; another plugin cannot wrap it.
+    return fn_run(k, c.owner, c.fn, focused, args)
+}
+
+// A command or a hook listener. What it submitted lands before this returns.
+fn_run :: proc(k: ^Kernel, owner: int, fn: Command_Fn, focused: Maybe(docs.Id), args: string) -> (code: i32, ran: bool) {
     at: At
     if id, ok := focused.?; ok {
-        at = at_make(k, c.owner, id)
+        at = at_make(k, owner, id)
     }
     defer at_free(k, at)
-    // (hole advice :tags (compose abi) :sev missing-system) the command's own fn always runs; another plugin cannot wrap it.
-    r := dispatch(k, c.owner, {what = .Command, fn = c.fn, at = &at, data = transmute([]u8)args}) or_return
+    r := dispatch(k, owner, {what = .Command, fn = fn, at = &at, data = transmute([]u8)args}) or_return
     kernel_settle(k)
     return r.code, true
 }

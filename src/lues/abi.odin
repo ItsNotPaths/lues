@@ -6,7 +6,7 @@ import "../docs"
 // (hole abi-codegen :tags (abi) :sev missing-system) lues.h and rustplug's sys module are kept in step with this file by hand; nothing generates them or checks they agree.
 // include/lues.h mirrors this.
 
-API :: 4 // 2: fail. 3: adopt. 4: call
+API :: 4 // 2: fail. 3: adopt. 4: call, hooks
 
 ENTRY :: "lues_main"
 
@@ -36,6 +36,16 @@ Call_Status :: enum c.int32_t {
     Absent, // no such command, or its plugin is gone
     Failed, // it faulted, or calls nested too deep
 }
+
+Hook_Mode :: enum c.int32_t {
+    Emit, // every listener runs
+    Bail, // stops at the first non-zero exit
+}
+
+Hook_Flag :: enum u32 {
+    Prepend = 0, // runs before the listeners already there
+}
+Hook_Flags :: distinct bit_set[Hook_Flag; u32]
 
 // --- the read view: the piece table, read in place ---
 
@@ -184,6 +194,14 @@ Api :: struct {
     call:             proc "c" (api: ^Api, self: Self, doc: Doc_Handle, name: [^]u8,
                                 name_len: c.size_t, args: [^]u8, args_len: c.size_t,
                                 code: ^c.int32_t) -> Call_Status,
+    // API 4. A hook point is the definer's to run; anyone may join it, before or after.
+    hook_define:      proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: c.size_t,
+                                mode: Hook_Mode) -> c.int32_t,
+    hook_add:         proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: c.size_t,
+                                fn: Command_Fn, flags: Hook_Flags),
+    hook_run:         proc "c" (api: ^Api, self: Self, doc: Doc_Handle, name: [^]u8,
+                                name_len: c.size_t, args: [^]u8, args_len: c.size_t,
+                                code: ^c.int32_t) -> Call_Status,
 }
 
 #assert(size_of(Block) == 16)
@@ -196,7 +214,7 @@ Api :: struct {
 #assert(size_of(Span_Pub) == 40)
 #assert(size_of(Kind_Vt) == 24)
 #assert(size_of(Kind_Spec) == 64)
-#assert(size_of(Api) == 160)
+#assert(size_of(Api) == 184)
 
 pack :: proc "contextless" (lo, hi: u32) -> u64 {
     return u64(lo) | u64(hi) << 32

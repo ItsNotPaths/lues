@@ -39,7 +39,9 @@ api_init :: proc(k: ^Kernel) {
         fail             = api_fail,
         adopt            = api_adopt,
         call             = api_call,
-        // (hole plugin-hooks :tags (compose abi) :sev missing-system) no hook arms: a plugin cannot declare a hook point for others to join.
+        hook_define      = api_hook_define,
+        hook_add         = api_hook_add,
+        hook_run         = api_hook_run,
         // (hole doc-vars :tags (compose abi) :sev missing-system) no per-document variables: plugins cannot share named state.
     }
 }
@@ -345,6 +347,58 @@ api_call :: proc "c" (api: ^Api, self: Self, doc: Doc_Handle, name: [^]u8, name_
     if !ran {
         return .Failed
     }
+    if code != nil {
+        code^ = r
+    }
+    return .Ran
+}
+
+@(private = "file")
+api_hook_define :: proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: uint, mode: Hook_Mode) -> c.int32_t {
+    k, i, ok := api_kernel(api, self)
+    defer api_done()
+    if !ok || name_len == 0 || mode < min(Hook_Mode) || mode > max(Hook_Mode) {
+        return 1
+    }
+    context = k.ctx
+    n := string(name[:name_len])
+    if _, taken := point_named(k, n); taken {
+        say(k, fmt.tprintf("%s: a hook called %s is already defined", k.plugs[i].name, n))
+        return 1
+    }
+    append(&k.points, Hook_Point{strings.clone(n), i, mode})
+    record(k, i, {what = .Point, idx = len(k.points) - 1})
+    return 0
+}
+
+@(private = "file")
+api_hook_add :: proc "c" (api: ^Api, self: Self, name: [^]u8, name_len: uint, fn: Command_Fn, flags: Hook_Flags) {
+    k, i, ok := api_kernel(api, self)
+    defer api_done()
+    if !ok || fn == nil || name_len == 0 {
+        return
+    }
+    context = k.ctx
+    k.join_seq += 1
+    order := -k.join_seq if .Prepend in flags else k.join_seq
+    append(&k.joins, Hook_Join{strings.clone(string(name[:name_len])), i, fn, order})
+    record(k, i, {what = .Join, idx = len(k.joins) - 1})
+}
+
+@(private = "file")
+api_hook_run :: proc "c" (api: ^Api, self: Self, doc: Doc_Handle, name: [^]u8, name_len: uint,
+                          args: [^]u8, args_len: uint, code: ^c.int32_t) -> Call_Status {
+    k, i, ok := api_kernel(api, self)
+    defer api_done()
+    if !ok {
+        return .Failed
+    }
+    context = k.ctx
+    point, named := point_named(k, string(name[:name_len]))
+    if !named || k.points[point].owner != i {
+        return .Absent
+    }
+    r := point_run(k, point, doc_id(doc), string(args[:args_len]))
     if code != nil {
         code^ = r
     }

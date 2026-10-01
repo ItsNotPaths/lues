@@ -32,6 +32,16 @@ static int32_t die(const lues_api *api, lues_self self, const lues_at *at, const
     return 0;
 }
 
+/* Says how a call or a hook run went, and exits with the status. */
+static int32_t said(const lues_api *api, lues_self self, lues_call_status st, int32_t code) {
+    char buf[32];
+    int  n = st == LUES_CALL_RAN      ? snprintf(buf, sizeof buf, "ran %d", code)
+             : st == LUES_CALL_ABSENT ? snprintf(buf, sizeof buf, "absent")
+                                      : snprintf(buf, sizeof buf, "failed");
+    api->message(api, self, buf, (size_t)n);
+    return (int32_t)st;
+}
+
 /* `call <name> <args>`: runs it through the api's call arm and says how that went. */
 static int32_t call(const lues_api *api, lues_self self, const lues_at *at, const char *args,
                     size_t args_len) {
@@ -40,15 +50,47 @@ static int32_t call(const lues_api *api, lues_self self, const lues_at *at, cons
     size_t           rest = sp ? args_len - name_len - 1 : 0;
     int32_t          code = -1;
     lues_call_status st;
-    char             buf[32];
-    int              n;
     (void)at;
     st = api->call(api, self, LUES_NO_DOC, args, name_len, sp ? sp + 1 : "", rest, &code);
-    n = st == LUES_CALL_RAN      ? snprintf(buf, sizeof buf, "ran %d", code)
-        : st == LUES_CALL_ABSENT ? snprintf(buf, sizeof buf, "absent")
-                                 : snprintf(buf, sizeof buf, "failed");
+    return said(api, self, st, code);
+}
+
+/* The `greet` hook: `define-emit` or `define-bail` defines it, `fire <args>` runs it. */
+static int32_t define_emit(const lues_api *api, lues_self self, const lues_at *at,
+                           const char *args, size_t args_len) {
+    (void)at, (void)args, (void)args_len;
+    return api->hook_define(api, self, LIT("greet"), LUES_HOOK_EMIT);
+}
+
+static int32_t define_bail(const lues_api *api, lues_self self, const lues_at *at,
+                           const char *args, size_t args_len) {
+    (void)at, (void)args, (void)args_len;
+    return api->hook_define(api, self, LIT("greet"), LUES_HOOK_BAIL);
+}
+
+static int32_t fire(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                    size_t args_len) {
+    int32_t          code = -1;
+    lues_call_status st;
+    (void)at;
+    st = api->hook_run(api, self, LUES_NO_DOC, LIT("greet"), args, args_len, &code);
+    return said(api, self, st, code);
+}
+
+static int32_t greet_n(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                       size_t args_len) {
+    char buf[64];
+    int  n = snprintf(buf, sizeof buf, "n %.*s", (int)args_len, args);
+    (void)at;
     api->message(api, self, buf, (size_t)n);
-    return (int32_t)st;
+    return 0;
+}
+
+static int32_t join_n(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                      size_t args_len) {
+    (void)at, (void)args, (void)args_len;
+    api->hook_add(api, self, LIT("greet"), greet_n, 0);
+    return 0;
 }
 
 LUES_MAIN {
@@ -57,6 +99,10 @@ LUES_MAIN {
     }
     api->register_command(api, self, LIT("nest"), LIT("run a command inside this one"), nest);
     api->register_command(api, self, LIT("call"), LIT("run a command through call"), call);
+    api->register_command(api, self, LIT("define-emit"), LIT("define greet"), define_emit);
+    api->register_command(api, self, LIT("define-bail"), LIT("define greet, bailing"), define_bail);
+    api->register_command(api, self, LIT("fire"), LIT("run greet"), fire);
+    api->register_command(api, self, LIT("join-n"), LIT("join greet"), join_n);
     api->register_command(api, self, LIT("die"), LIT("dereference null"), die);
     return 0;
 }

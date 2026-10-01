@@ -44,6 +44,8 @@ Plug_State :: enum u8 {
 Record_Kind :: enum u8 {
     Kind,
     Command,
+    Point,
+    Join,
     Bind,
     Watch,
     Config,
@@ -369,6 +371,14 @@ revert :: proc(k: ^Kernel, p: ^Plugin, r: Record) {
         delete(c.name)
         delete(c.doc)
         c^ = {owner = -1}
+    case .Point:
+        pt := &k.points[r.idx]
+        delete(pt.name)
+        pt^ = {owner = -1}
+    case .Join:
+        j := &k.joins[r.idx]
+        delete(j.name)
+        j^ = {owner = -1}
     case .Bind:
         k.reqs[r.idx].dead = true // the row in the file stays
     case .Config:

@@ -170,3 +170,46 @@ call_test :: proc(t: ^testing.T) {
     testing.expect(t, !run(&k, "call", nil, "hello 0"))
     testing.expect_value(t, strings.to_string(said), "3\nran 3\nabsent\ncplug faulted (SIGSEGV), and is unloaded\nfailed\nabsent\n")
 }
+
+// A hook runs its listeners in join order, prepends first; bail stops at a non-zero exit.
+// Joins outlive their definer's reload, and a listener that faults is skipped.
+@(test)
+hook_test :: proc(t: ^testing.T) {
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Nest_Box
+    defer lues.kernel_destroy(&k)
+    if !nest_host(t, &k, &box, &said, "hook") {
+        return
+    }
+    expect_said :: proc(t: ^testing.T, said: ^strings.Builder, want: string, loc := #caller_location) {
+        testing.expect_value(t, strings.to_string(said^), want, loc)
+        strings.builder_reset(said)
+    }
+
+    run(&k, "join-a")
+    run(&k, "fire", nil, "x")
+    expect_said(t, &said, "absent\n")
+    testing.expect(t, run(&k, "define-bail"))
+    testing.expect(t, !run(&k, "define-emit"), "defined twice")
+    run(&k, "join-b-first")
+    strings.builder_reset(&said)
+    run(&k, "fire", nil, "0")
+    expect_said(t, &said, "b 0\na 0\nran 0\n")
+    run(&k, "fire", nil, "2")
+    expect_said(t, &said, "b 2\nran 2\n")
+
+    testing.expect(t, lues.loader_reload(&k, "nplug"))
+    run(&k, "fire", nil, "2")
+    expect_said(t, &said, "absent\n")
+    run(&k, "define-emit")
+    run(&k, "fire", nil, "2")
+    expect_said(t, &said, "b 2\na 2\nran 0\n")
+
+    run(&k, "join-boom")
+    run(&k, "join-n")
+    run(&k, "fire", nil, "x")
+    expect_said(t, &said, "b x\na x\ncplug faulted (SIGSEGV), and is unloaded\nn x\nran 0\n")
+    run(&k, "fire", nil, "y")
+    expect_said(t, &said, "n y\nran 0\n")
+}
