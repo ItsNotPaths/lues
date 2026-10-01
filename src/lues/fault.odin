@@ -668,9 +668,9 @@ in_plugin :: proc "contextless" (f: ^Frame, pc: uintptr) -> bool {
     return mine(f, uintptr(info.dli_fbase))
 }
 
-// (hole cxx-runtime-frames :tags fault :sev wrong-behavior) a C++ runtime frame under the plugin's (libstdc++'s std::thread trampoline) counts as foreign, so a fault on a std::thread dies and its reap never ends it.
 // Guard 1 for the rest of the stack: every frame under `at`, down to the dispatch frame, is
-// the plugin's. A walk that missed the pc (at < 0), or ends first, judges only what it saw.
+// the plugin's, or the C++ runtime's calling it (libstdc++'s std::thread trampoline): read for
+// GCC 16, libstdc++ and libgcc hold no global lock while they call out. libc stays foreign. A walk that missed the pc (at < 0), or ends first, judges only what it saw.
 @(private = "file")
 owned :: proc "contextless" (f: ^Frame, n, at: int) -> bool {
     if at < 0 {
@@ -684,7 +684,7 @@ owned :: proc "contextless" (f: ^Frame, n, at: int) -> bool {
         if o.base == g_kernel || (via != 0 && o.base == via) {
             return true
         }
-        if !mine(f, o.base) {
+        if !mine(f, o.base) && !cxx_runtime(o.base) {
             return false
         }
     }
@@ -713,9 +713,11 @@ blamed :: proc "contextless" (f: ^Frame, n, at: int, aborted: bool) -> []u8 {
 // libc, or the C++ runtime.
 @(private = "file")
 runtime_object :: proc "contextless" (base: uintptr) -> bool {
-    if base == g_libc {
-        return true
-    }
+    return base == g_libc || cxx_runtime(base)
+}
+
+@(private = "file")
+cxx_runtime :: proc "contextless" (base: uintptr) -> bool {
     for r in g_runtime[:intrinsics.atomic_load(&g_nruntime)] {
         if base == r {
             return true

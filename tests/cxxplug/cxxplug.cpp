@@ -1,5 +1,6 @@
 // The C++ test plugin, against lues.h only, with libstdc++ linked as a shared object.
 #include <stdexcept>
+#include <chrono>
 #include <string>
 #include <thread>
 #include "../../include/lues.h"
@@ -11,6 +12,16 @@ static int *volatile NOWHERE;
 // Faults on a std::thread: libstdc++'s trampoline sits under the plugin's frames.
 static int32_t threadboom(const lues_api *, lues_self, const lues_at *, const char *, size_t) {
     std::thread([] { *NOWHERE = 1; }).join();
+    return 0;
+}
+
+// A detached std::thread that spins in its own code for five seconds.
+static int32_t spin(const lues_api *, lues_self, const lues_at *, const char *, size_t) {
+    std::thread([] {
+        auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (std::chrono::steady_clock::now() < until) {
+        }
+    }).detach();
     return 0;
 }
 
@@ -32,6 +43,7 @@ static int32_t throw_cmd(const lues_api *, lues_self, const lues_at *, const cha
 extern "C" LUES_MAIN {
     api->register_command(api, self, LIT("threadboom"), LIT("fault on a std::thread"), threadboom);
     api->register_command(api, self, LIT("strboom"), LIT("fault under std::string"), strboom);
+    api->register_command(api, self, LIT("spin"), LIT("start a std::thread that runs on"), spin);
     api->register_command(api, self, LIT("throw"), LIT("throw out of the entry"), throw_cmd);
     api->register_command(api, self, LIT("hello"), LIT("exit 0"),
                           [](const lues_api *, lues_self, const lues_at *, const char *, size_t) -> int32_t {
