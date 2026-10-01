@@ -43,7 +43,7 @@ Dl_Info :: struct {
     dli_saddr: rawptr,
 }
 
-// (hole abort-catch :tags fault :sev missing-system :needs foreign-frames) no SIGABRT: a C assert or C++ std::terminate in a plugin kills the process.
+// (hole abort-catch :tags fault :sev missing-system) no SIGABRT: a C assert or C++ std::terminate in a plugin kills the process.
 FAULT_SIGNALS :: [?]posix.Signal{.SIGSEGV, .SIGBUS, .SIGILL, .SIGFPE}
 
 PLUG_HANG_MS :: 5000
@@ -71,6 +71,7 @@ Frame :: struct {
 Guard :: struct {
     frames: [FAULT_DEPTH]Frame,
     depth:  int, // atomic; 0 is unarmed
+    step:   int, // the depth of the frame a hang is being stepped back into; 0 for none
     why:    string, // a literal, or fail's copy in `said`
     said:   [SAID_MAX]u8,
     traced: bool,
@@ -261,6 +262,9 @@ pop :: proc "contextless" () -> ^Frame {
     d := intrinsics.atomic_load(&g_guard.depth) - 1
     f := &g_guard.frames[d]
     intrinsics.atomic_store(&g_guard.depth, d)
+    if g_guard.step > d {
+        g_guard.step = 0
+    }
     watch_pop(f)
     return f
 }
@@ -290,7 +294,7 @@ fault_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr
         die(sig, f.name[:f.n])
         return
     }
-    // (hole leaf-libc-faults :tags fault :sev missing-system :needs foreign-frames) a fault in memcpy, strlen or another lock-free libc leaf the plugin called kills the process.
+    // (hole leaf-libc-faults :tags fault :sev missing-system) a fault in memcpy, strlen or another lock-free libc leaf the plugin called kills the process.
     // (hole plugin-threads :tags fault :sev missing-system) a thread a plugin started has no frame, so a fault on it dies unblamed.
     if !in_plugin(f, pc) {
         die(sig, nil)
@@ -304,9 +308,12 @@ fault_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr
     unwind(signal_name(sig))
 }
 
-// (hole foreign-frames :tags fault :sev wrong-behavior) a hang is unwound wherever the pc is; landing inside malloc leaves its arena lock held, and the next malloc deadlocks.
+// A hang in code that is not the plugin's may hold a lock there, so it is not unwound: the
+// cpu steps it back into the plugin, one instruction per SIGTRAP, for one more window. A
+// blocked syscall comes back with EINTR, since the alarm has no SA_RESTART.
 @(private = "file")
 hang_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr) {
+    g := &g_guard
     f := top()
     if f == nil {
         return // stale: the dispatch came back
@@ -314,12 +321,44 @@ hang_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr)
     if intrinsics.atomic_load(&g_watch_until) != 0 {
         return // stale: a newer deadline was set while the alarm was in flight
     }
-    n, _ := walk(fault_ip(uc))
-    g_guard.traced = trace_write(n, "stopped returning")
-    if intrinsics.atomic_load(&f.busy) {
+    pc := fault_ip(uc)
+    n, at := walk(pc)
+    if intrinsics.atomic_load(&f.busy) || g.step != 0 {
+        g.traced = trace_write(n, "stopped returning")
         die(.SIGABRT, f.name[:f.n])
         return
     }
+    if in_plugin(f, pc) && owned(f, n, at) {
+        g.traced = trace_write(n, "stopped returning")
+        unwind("stopped returning")
+    }
+    g.step = intrinsics.atomic_load(&g.depth)
+    step(uc, true)
+    intrinsics.atomic_store(&g_watch_until, time.tick_now()._nsec + g_watch_ms * 1e6)
+}
+
+// Unwinds at the first instruction where the stepped frame's plugin is back on top, with only
+// its own frames under it. A nested dispatch is stepped through.
+@(private = "file")
+step_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, uc: rawptr) {
+    g := &g_guard
+    d := intrinsics.atomic_load(&g.depth)
+    if g.step == 0 || d < g.step {
+        g.step = 0 // the frame came back or was unwound
+        step(uc, false)
+        return
+    }
+    f := top()
+    pc := fault_ip(uc)
+    if d > g.step || intrinsics.atomic_load(&f.busy) || !in_plugin(f, pc) {
+        return
+    }
+    n, at := walk(pc)
+    if !owned(f, n, at) {
+        return
+    }
+    g.step = 0
+    g.traced = trace_write(n, "stopped returning")
     unwind("stopped returning")
 }
 
@@ -683,7 +722,17 @@ when ODIN_OS == .Linux && ODIN_ARCH == .amd64 {
 
     @(private = "file")
     REG_RIP :: 16
+    @(private = "file")
+    REG_EFL :: 17
     #assert(offset_of(Ucontext, gregs) == 40)
+
+    // The trap flag: once the handler returns, the cpu raises SIGTRAP after each instruction.
+    @(private = "file")
+    step :: proc "contextless" (uc: rawptr, on: bool) {
+        TF :: 0x100
+        efl := &(^Ucontext)(uc).gregs[REG_EFL]
+        efl^ = efl^ | TF if on else efl^ & ~u64(TF)
+    }
 
     @(private = "file")
     fault_ip :: proc "contextless" (uc: rawptr) -> uintptr {
@@ -695,6 +744,10 @@ when ODIN_OS == .Linux && ODIN_ARCH == .amd64 {
     fault_ip :: proc "contextless" (uc: rawptr) -> uintptr {
         return 0
     }
+
+    // No stepping: a hang outside the plugin dies when its second window ends.
+    @(private = "file")
+    step :: proc "contextless" (uc: rawptr, on: bool) {}
 }
 
 // --- the watchdog ---
@@ -722,6 +775,10 @@ fault_watchdog_start :: proc(ms := PLUG_HANG_MS) {
     act.sa_flags = {.SIGINFO, .ONSTACK}
     posix.sigemptyset(&act.sa_mask)
     if posix.sigaction(.SIGALRM, &act, nil) != .OK {
+        return
+    }
+    act.sa_sigaction = step_handler
+    if posix.sigaction(.SIGTRAP, &act, nil) != .OK {
         return
     }
     g_watch_ms = i64(ms)

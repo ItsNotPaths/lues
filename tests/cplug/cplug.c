@@ -37,6 +37,44 @@ static int32_t sortboom(const lues_api *api, lues_self self, const lues_at *at, 
     return 0;
 }
 
+/* Five seconds, bounded like hang. */
+static int spent(const struct timespec *from) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec - from->tv_sec >= 5;
+}
+
+/* Stops returning inside a qsort comparator: never back in its own frames alone. */
+static struct timespec SORT_FROM;
+
+static int hang_cmp(const void *a, const void *b) {
+    (void)a, (void)b;
+    while (!spent(&SORT_FROM)) {
+    }
+    return 0;
+}
+
+static int32_t sorthang(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                        size_t args_len) {
+    int two[2] = {2, 1};
+    (void)api, (void)self, (void)at, (void)args, (void)args_len;
+    clock_gettime(CLOCK_MONOTONIC, &SORT_FROM);
+    qsort(two, 2, sizeof two[0], hang_cmp);
+    return 0;
+}
+
+/* Stops returning while it mostly runs malloc and free. */
+static int32_t churn(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                     size_t args_len) {
+    struct timespec from;
+    (void)api, (void)self, (void)at, (void)args, (void)args_len;
+    clock_gettime(CLOCK_MONOTONIC, &from);
+    for (size_t n = 1; !spent(&from); n = n * 7 % 65521) {
+        free(malloc(n));
+    }
+    return 0;
+}
+
 /* A garbage edits pointer: the kernel faults reading it, inside the api call. */
 static int32_t badsubmit(const lues_api *api, lues_self self, const lues_at *at,
                          const char *args, size_t args_len) {
@@ -405,6 +443,8 @@ LUES_MAIN {
     api->register_command(api, self, LIT("boom"), LIT("dereference null"), boom);
     api->register_command(api, self, LIT("hang"), LIT("stop returning"), hang);
     api->register_command(api, self, LIT("sortboom"), LIT("fault under qsort"), sortboom);
+    api->register_command(api, self, LIT("sorthang"), LIT("stop returning under qsort"), sorthang);
+    api->register_command(api, self, LIT("churn"), LIT("stop returning in malloc"), churn);
     api->register_command(api, self, LIT("fail"), LIT("fail with the args"), fail);
     api->register_command(api, self, LIT("failoff"), LIT("fail from another thread"), failoff);
     api->register_command(api, self, LIT("badsubmit"), LIT("fault the kernel in submit"), badsubmit);

@@ -148,6 +148,34 @@ hang_test :: proc(t: ^testing.T) {
     testing.expect(t, strings.contains(strings.to_string(said), "stopped returning"), strings.to_string(said))
 }
 
+// A hang that is mostly in malloc is stepped out of it before the unwind, so no malloc lock is
+// left held: loading the plugin again, which mallocs, still works.
+@(test)
+churn_test :: proc(t: ^testing.T) {
+    sync.guard(&watch_lock)
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Api_Box
+    defer lues.kernel_destroy(&k)
+    if _, ok := plug_host(t, &k, &box, &said, "churn"); !ok {
+        return
+    }
+    lues.fault_watchdog_start(300)
+    defer lues.fault_watchdog_stop()
+
+    testing.expect(t, !run(&k, "churn"))
+    testing.expect(t, strings.contains(strings.to_string(said), "stopped returning"), strings.to_string(said))
+    testing.expect(t, lues.loader_load(&k, lues.loader_path(&k, "cplug")), strings.to_string(said))
+    testing.expect(t, run(&k, "hello"))
+}
+
+// A hang that never gets back to the plugin's own frames alone dies when its second window ends,
+// with the plugin quarantined.
+@(test)
+foreign_hang_test :: proc(t: ^testing.T) {
+    crash(t, "foreign-hang", "sorthang", .SIGABRT)
+}
+
 // Guard 1: only a pc inside the plugin's own object is recovered.
 @(test)
 guard_test :: proc(t: ^testing.T) {
@@ -259,6 +287,7 @@ crash_child :: proc(t: ^testing.T) {
     testing.expect(t, test_host(&k, &box, {home = {data = data, state = data}}))
     k.hooks.say, k.user = heard, &said
     testing.expect(t, lues.loader_load(&k, lues.loader_path(&k, "cplug")))
+    lues.fault_watchdog_start(200) // a child's own process: no other test to trip
     id := docs.store_open(&k.store)
     // Every command gets the grammar's path; only scan reads it.
     run(&k, os.get_env(CRASH_CMD_ENV, context.temp_allocator), id, lues.loader_path(&k, "grammar"))

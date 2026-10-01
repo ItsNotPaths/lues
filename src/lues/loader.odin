@@ -315,7 +315,7 @@ unload :: proc(k: ^Kernel, i: int) {
         }
     }
     clear(&p.ledger)
-    // (hole thread-reap :tags (fault loader) :sev missing-system :needs (plugin-threads foreign-frames)) threads a plugin started outlive it: they run on after a fault and crash after dlclose.
+    // (hole thread-reap :tags (fault loader) :sev missing-system :needs plugin-threads) threads a plugin started outlive it: they run on after a fault and crash after dlclose.
     // (hole plugin-arenas :tags (memory abi) :sev missing-system) no arena per plugin; what a faulted plugin allocated leaks.
     if p.state == .Live {
         dynlib.unload_library(p.lib)
