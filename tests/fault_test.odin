@@ -141,6 +141,22 @@ kept_test :: proc(t: ^testing.T) {
     testing.expect(t, strings.contains(strings.to_string(said), "SIGSEGV"), strings.to_string(said))
 }
 
+// Under strict ISO C, signal is __sysv_signal: it is chained too.
+@(test)
+sysv_kept_test :: proc(t: ^testing.T) {
+    said := strings.builder_make(context.temp_allocator)
+    k: lues.Kernel
+    box: Api_Box
+    defer lues.kernel_destroy(&k)
+    if _, ok := plug_host(t, &k, &box, &said, "sysv-kept"); !ok {
+        return
+    }
+
+    testing.expect(t, !run(&k, "sysvboom"))
+    testing.expect_value(t, lues.loader_find(&k, "cplug"), -1)
+    testing.expect(t, strings.contains(strings.to_string(said), "SIGSEGV"), strings.to_string(said))
+}
+
 // A raw syscall goes around the export; lues puts its handler back after the call.
 @(test)
 raw_kept_test :: proc(t: ^testing.T) {

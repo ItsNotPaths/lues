@@ -34,17 +34,35 @@ interpose_sigaction :: proc "c" (sig: posix.Signal, act, old: ^posix.sigaction_t
     return .OK
 }
 
+Handler :: proc "c" (posix.Signal)
+
 // glibc's signal calls its own sigaction, not the export.
 @(export, link_name = "signal")
-interpose_signal :: proc "c" (sig: posix.Signal, handler: proc "c" (posix.Signal)) -> proc "c" (posix.Signal) {
+interpose_signal :: proc "c" (sig: posix.Signal, handler: Handler) -> Handler {
     act := posix.sigaction_t {
         sa_handler = handler,
         sa_flags   = {.RESTART},
     }
     posix.sigemptyset(&act.sa_mask)
     posix.sigaddset(&act.sa_mask, sig)
+    return swap_handler(sig, &act)
+}
+
+// signal under strict ISO C (-std=c11 and no _DEFAULT_SOURCE): one-shot, as System V's.
+@(export, link_name = "__sysv_signal")
+interpose_sysv_signal :: proc "c" (sig: posix.Signal, handler: Handler) -> Handler {
+    act := posix.sigaction_t {
+        sa_handler = handler,
+        sa_flags   = {.RESETHAND, .SA_NODEFER},
+    }
+    posix.sigemptyset(&act.sa_mask)
+    return swap_handler(sig, &act)
+}
+
+@(private = "file")
+swap_handler :: proc "c" (sig: posix.Signal, act: ^posix.sigaction_t) -> Handler {
     old: posix.sigaction_t
-    if interpose_sigaction(sig, &act, &old) != .OK {
+    if interpose_sigaction(sig, act, &old) != .OK {
         return auto_cast posix.SIG_ERR
     }
     return old.sa_handler

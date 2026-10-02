@@ -110,6 +110,15 @@ static int32_t catch_cmd(const lues_api *api, lues_self self, const lues_at *at,
 }
 
 /* Ignores SIGSEGV through signal, which must not reach libc; SIGALRM must be refused. */
+/* signal's strict ISO C name, then a fault in the same call: lues's repair after the call is late. */
+static int32_t sysvboom(const lues_api *api, lues_self self, const lues_at *at, const char *args,
+                        size_t args_len) {
+    if (__sysv_signal(SIGSEGV, SIG_DFL) == SIG_ERR) {
+        return 1;
+    }
+    return boom(api, self, at, args, args_len);
+}
+
 static int32_t sigign(const lues_api *api, lues_self self, const lues_at *at, const char *args,
                       size_t args_len) {
     struct sigaction sa;
@@ -735,6 +744,7 @@ LUES_MAIN {
     api->register_command(api, self, LIT("thread"), LIT("start a thread that runs on"), thread_cmd);
     api->register_command(api, self, LIT("catch"), LIT("catch a grammar fault itself"), catch_cmd);
     api->register_command(api, self, LIT("sigign"), LIT("ignore SIGSEGV through signal"), sigign);
+    api->register_command(api, self, LIT("sysvboom"), LIT("reset SIGSEGV through __sysv_signal, then fault"), sysvboom);
     api->register_command(api, self, LIT("rawsig"), LIT("ignore SIGSEGV by syscall"), rawsig);
     api->register_command(api, self, LIT("sorthang"), LIT("stop returning under qsort"), sorthang);
     api->register_command(api, self, LIT("churn"), LIT("stop returning in malloc"), churn);
