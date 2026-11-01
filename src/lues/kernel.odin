@@ -10,6 +10,7 @@ import "../work"
 Home :: struct {
     config: string, // binds.conf, config.conf
     data:   string, // plugins/
+    system: string, // plugins/, read-only, behind data's; "" for none
     state:  string, // quarantine, faults
 }
 

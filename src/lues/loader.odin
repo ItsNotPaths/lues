@@ -167,22 +167,14 @@ loader_reap :: proc(k: ^Kernel) {
     }
 }
 
-// In name order. Quarantined plugins are held back; loader_load lifts a quarantine.
+// In name order, data's and system's as one list. Quarantined plugins are held back;
+// loader_load lifts a quarantine.
 loader_autoload :: proc(k: ^Kernel) {
     context = k.ctx
-    dir, _ := filepath.join({k.home.data, PLUGIN_DIR}, context.temp_allocator)
-    f, err := os.open(dir)
-    if err != nil {
-        return
-    }
-    defer os.close(f)
-    it := os.read_directory_iterator_create(f)
-    defer os.read_directory_iterator_destroy(&it)
     found := make([dynamic]string, context.temp_allocator)
-    for info in os.read_directory_iterator(&it) {
-        if info.type == .Directory && os.exists(loader_path(k, info.name)) {
-            append(&found, strings.clone(info.name, context.temp_allocator))
-        }
+    plugin_names(k, k.home.data, &found)
+    if k.home.system != "" {
+        plugin_names(k, k.home.system, &found)
     }
     slice.sort(found[:])
     held := make([dynamic]string, context.temp_allocator)
@@ -197,6 +189,24 @@ loader_autoload :: proc(k: ^Kernel) {
         say(k, fmt.tprintf("%s took a start down and %s not loaded",
                            strings.join(held[:], ", ", context.temp_allocator),
                            len(held) == 1 ? "is" : "are"))
+    }
+}
+
+@(private = "file")
+plugin_names :: proc(k: ^Kernel, root: string, found: ^[dynamic]string) {
+    dir, _ := filepath.join({root, PLUGIN_DIR}, context.temp_allocator)
+    f, err := os.open(dir)
+    if err != nil {
+        return
+    }
+    defer os.close(f)
+    it := os.read_directory_iterator_create(f)
+    defer os.read_directory_iterator_destroy(&it)
+    for info in os.read_directory_iterator(&it) {
+        if info.type == .Directory && os.exists(loader_path(k, info.name)) &&
+           !slice.contains(found[:], info.name) {
+            append(found, strings.clone(info.name, context.temp_allocator))
+        }
     }
 }
 
@@ -235,12 +245,16 @@ loader_slot :: proc(k: ^Kernel, name, path: string) -> int {
     return len(k.plugs) - 1
 }
 
-// Temp-allocated.
+// Data's copy, else system's; data's path when neither has one. Temp-allocated.
 loader_path :: proc(k: ^Kernel, name: string) -> string {
     context = k.ctx
     file := fmt.tprintf("%s.so", name)
     path, _ := filepath.join({k.home.data, PLUGIN_DIR, name, file}, context.temp_allocator)
-    return path
+    if k.home.system == "" || os.exists(path) {
+        return path
+    }
+    sys, _ := filepath.join({k.home.system, PLUGIN_DIR, name, file}, context.temp_allocator)
+    return os.exists(sys) ? sys : path
 }
 
 // dlopen shares a mapping with any earlier load of the same path or inode, and a faulted
